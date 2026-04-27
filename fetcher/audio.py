@@ -1,0 +1,56 @@
+import json
+from pathlib import Path
+
+from bilibili_api import audio, Credential
+from rich.console import Console
+
+from downloader import download_file
+from store import DownloadStore
+from utils import sanitize_filename
+
+console = Console()
+
+
+async def download_audio(
+    item,
+    uid: int,
+    credential: Credential,
+    store: DownloadStore,
+    base_dir: Path,
+) -> bool:
+    auid = int(item.content_id)
+    title = item.title
+    dir_name = sanitize_filename(f"AU{auid} - {title}")
+    output_dir = base_dir / "audios" / dir_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    a = audio.Audio(auid=auid, credential=credential)
+
+    try:
+        info = await a.get_info()
+        info_path = output_dir / "info.json"
+        info_path.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        dl_data = await a.get_download_url()
+        cdns = dl_data.get("cdns", []) if isinstance(dl_data, dict) else []
+        if not cdns:
+            cdn = dl_data.get("cdn", "") if isinstance(dl_data, dict) else ""
+            if cdn:
+                cdns = [cdn]
+
+        if not cdns or not cdns[0]:
+            console.print(f"[red]未找到音频下载URL: AU{auid}[/red]")
+            await store.mark("audio", str(auid), "failed", str(output_dir))
+            return False
+
+        ok = await download_file(cdns[0], output_dir / "audio.m4a", credential)
+        if ok:
+            await store.mark("audio", str(auid), "done", str(output_dir))
+        else:
+            await store.mark("audio", str(auid), "failed", str(output_dir))
+        return ok
+
+    except Exception as e:
+        console.print(f"[red]音频 AU{auid} 处理失败: {e}[/red]")
+        await store.mark("audio", str(auid), "failed", str(output_dir))
+        return False

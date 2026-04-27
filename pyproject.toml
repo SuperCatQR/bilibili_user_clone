@@ -4,4 +4,13 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "aiohttp>=3.13.5",
+    "aiosqlite>=0.22.1",
+    "beautifulsoup4>=4.14.3",
+    "bilibili-api-python>=17.4.1",
+    "click>=8.3.3",
+    "ffmpeg-python>=0.2.0",
+    "qrcode>=8.2",
+    "rich>=15.0.0",
+]

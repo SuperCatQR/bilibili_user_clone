@@ -1,0 +1,14 @@
+.agents
+.opencode
+.venv
+__pycache__/
+*.pyc
+*.pyo
+output/
+uv.lock
+.env
+.idea/
+.vscode/
+*.swp
+*.swo
+实现逻辑.md
