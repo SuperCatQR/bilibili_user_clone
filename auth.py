@@ -3,6 +3,7 @@ import time
 import asyncio
 from pathlib import Path
 
+import qrcode as qrcode_lib
 from bilibili_api import Credential, login_v2
 from rich.console import Console
 
@@ -50,12 +51,18 @@ def _save_credential(cred: Credential):
     CREDENTIAL_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _print_small_qr(url: str):
+    qr = qrcode_lib.QRCode(box_size=1, border=1)
+    qr.add_data(url)
+    qr.print_ascii(invert=True)
+
+
 async def _qr_login() -> Credential:
     console.print("[cyan]启动QR码登录...[/cyan]")
     qr = login_v2.QrCodeLogin(login_v2.QrCodeLoginChannel.WEB)
     await qr.generate_qrcode()
     console.print("[cyan]请使用B站手机APP扫描以下二维码登录：[/cyan]")
-    print(qr.get_qrcode_terminal())
+    _print_small_qr(qr._QrCodeLogin__qr_link)
 
     while True:
         await asyncio.sleep(5)
@@ -67,7 +74,7 @@ async def _qr_login() -> Credential:
         elif status == login_v2.QrCodeLoginEvents.TIMEOUT:
             console.print("[yellow]二维码已过期，重新生成...[/yellow]")
             await qr.generate_qrcode()
-            print(qr.get_qrcode_terminal())
+            _print_small_qr(qr._QrCodeLogin__qr_link)
         elif status == login_v2.QrCodeLoginEvents.CONF:
             console.print("[cyan]已扫描，请在手机上确认登录...[/cyan]")
         else:

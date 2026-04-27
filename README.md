@@ -10,11 +10,40 @@
 
 ### 安装
 
+推荐使用 [uv](https://docs.astral.sh/uv/) 管理项目：
+
 ```bash
+# 安装 uv（如果还没有）
+# Windows
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 克隆项目并安装依赖
+git clone https://github.com/SuperCatQR/bilibili_user_clone.git
+cd bilibili_user_clone
 uv sync
 ```
 
+也可以使用 pip：
+
+```bash
+pip install -e .
+```
+
 需要系统已安装 [ffmpeg](https://ffmpeg.org/)（仅 video `full` 模式需要合流，其他模式不需要）。
+
+### 运行
+
+```bash
+# 使用 uv
+uv run python main.py clone 946974
+
+# 或使用已安装的虚拟环境
+.venv\Scripts\activate    # Windows
+source .venv/bin/activate # macOS / Linux
+python main.py clone 946974
+```
 
 ### 认证
 
@@ -24,19 +53,19 @@ uv sync
 
 ```bash
 # 克隆用户全部内容（视频full模式）
-python main.py clone 946974
+uv run python main.py clone 946974
 
 # 只下载最近 48 小时发布的内容
-python main.py clone 946974 --hours 48
+uv run python main.py clone 946974 --hours 48
 
 # 只下载视频的字幕和动态
-python main.py clone 946974 --types video,dynamic --video-mode subtitle-only
+uv run python main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 
 # 只下载音频和专栏
-python main.py clone 946974 --types audio,article
+uv run python main.py clone 946974 --types audio,article
 
 # 视频(仅字幕) + 动态
-python main.py clone 946974 --types video,dynamic --video-mode subtitle-only
+uv run python main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 ```
 
 ## CLI 参数
