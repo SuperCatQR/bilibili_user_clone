@@ -7,7 +7,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from config import VALID_TYPES, VIDEO_MODES, DEFAULT_INTERVAL, DEFAULT_RETRY, BATCH_SIZE, BATCH_PAUSE
+from config import VALID_TYPES, VIDEO_MODES, DEFAULT_INTERVAL, DEFAULT_RETRY, BATCH_SIZE, BATCH_PAUSE_STEPS
 from auth import ensure_credential
 from store import DownloadStore
 from fetcher.enumerator import (
@@ -78,8 +78,10 @@ async def run_clone(uid: int, output: str, types: str, video_mode: str, interval
 
                 count += 1
                 if count % BATCH_SIZE == 0:
-                    console.print(f"[dim]已处理 {count} 项，暂停 {BATCH_PAUSE}s...[/dim]")
-                    await asyncio.sleep(BATCH_PAUSE)
+                    tier = min((count // BATCH_SIZE - 1) % len(BATCH_PAUSE_STEPS), len(BATCH_PAUSE_STEPS) - 1)
+                    pause = BATCH_PAUSE_STEPS[tier]
+                    console.print(f"[dim]已处理 {count} 项，暂停 {pause}s...[/dim]")
+                    await asyncio.sleep(pause)
                 else:
                     await asyncio.sleep(interval)
 
