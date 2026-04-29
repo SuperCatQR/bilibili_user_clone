@@ -124,8 +124,23 @@ async def download_video(
                 console.print("[red]未找到音频流[/red]")
                 await store.mark("video", bvid, "failed", str(output_dir))
                 return False
-            ok = await download_file(audio_stream.url, output_dir / "audio.m4a", credential)
+            temp_path = output_dir / "audio_temp.m4a"
+            ok = await download_file(audio_stream.url, temp_path, credential)
             if ok:
+                import ffmpeg
+                try:
+                    (
+                        ffmpeg
+                        .input(str(temp_path))
+                        .output(str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=44100, ac=2)
+                        .overwrite_output()
+                        .run(quiet=True)
+                    )
+                    temp_path.unlink(missing_ok=True)
+                except ffmpeg.Error as e:
+                    console.print(f"[red]音频转WAV失败: {e}[/red]")
+                    await store.mark("video", bvid, "failed", str(output_dir))
+                    return False
                 await store.mark("video", bvid, "done", str(output_dir))
             else:
                 await store.mark("video", bvid, "failed", str(output_dir))
@@ -178,18 +193,26 @@ async def download_video(
 
         import ffmpeg
         try:
-            v_input = ffmpeg.input(str(output_dir / "video_temp.m4v"))
-            a_input = ffmpeg.input(str(output_dir / "audio_temp.m4a"))
-            (
-                ffmpeg
-                .output(v_input, a_input, str(output_dir / "video.mp4"), vcodec="copy", acodec="copy")
-                .overwrite_output()
-                .run(quiet=True)
-            )
-            (output_dir / "video_temp.m4v").unlink(missing_ok=True)
-            (output_dir / "audio_temp.m4a").unlink(missing_ok=True)
+            if video_ok:
+                v_input = ffmpeg.input(str(output_dir / "video_temp.m4v"))
+                (
+                    ffmpeg
+                    .output(v_input, str(output_dir / "video.m4v"), vcodec="copy")
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+                (output_dir / "video_temp.m4v").unlink(missing_ok=True)
+            if audio_ok:
+                a_input = ffmpeg.input(str(output_dir / "audio_temp.m4a"))
+                (
+                    ffmpeg
+                    .output(a_input, str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=44100, ac=2)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+                (output_dir / "audio_temp.m4a").unlink(missing_ok=True)
         except ffmpeg.Error as e:
-            console.print(f"[red]ffmpeg 合流失败: {e}[/red]")
+            console.print(f"[red]ffmpeg 处理失败: {e}[/red]")
             await store.mark("video", bvid, "failed", str(output_dir))
             return False
 

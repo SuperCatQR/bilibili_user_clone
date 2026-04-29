@@ -126,9 +126,8 @@ output/<UID>/
 +-- info.json                    # 用户资料快照
 +-- videos/
 |   +-- <BV号> - <标题>/
-|       +-- video.mp4            # full 模式
-|       +-- video.m4v            # video-only 模式
-|       +-- audio.m4a            # audio-only 模式
+|       +-- video.m4v            # full / video-only 模式
+|       +-- audio.wav            # full / audio-only 模式（PCM 16bit WAV）
 |       +-- subtitles.srt        # subtitle-only 模式
 |       +-- info.json            # 视频元数据（所有模式均输出）
 +-- audios/
@@ -219,9 +218,9 @@ output/<UID>/
 
 | video-mode | 产出文件 | 说明 |
 |------------|----------|------|
-| `full` | `info.json` + `video.mp4` | 视频音频合流（需要 ffmpeg） |
+| `full` | `info.json` + `video.m4v` + `audio.wav` | 视频轨+音频轨分离，音频转WAV（需要 ffmpeg） |
 | `video-only` | `info.json` + `video.m4v` | 仅视频轨 |
-| `audio-only` | `info.json` + `audio.m4a` | 仅音频轨 |
+| `audio-only` | `info.json` + `audio.wav` | 仅音频轨，转WAV |
 | `subtitle-only` | `info.json` + `subtitles.srt` | 仅字幕（中文优先，无中文取首个） |
 | `none` | `info.json` | 仅元数据 |
 
