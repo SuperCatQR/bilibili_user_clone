@@ -2,9 +2,9 @@
 视频下载模块
 
 支持5种下载模式：
-- full: 下载视频轨+音频轨，分离保存为 video.m4v + audio.wav
+- full: 下载视频轨+音频轨，合并为 video.mp4
 - video-only: 仅下载视频轨 video.m4v
-- audio-only: 仅下载音频轨，转码为 audio.wav (PCM 16bit 44100Hz 立体声)
+- audio-only: 仅下载音频轨，转码为 audio.wav (PCM 16bit 16kHz 单声道)
 - subtitle-only: 仅下载字幕 subtitles.srt（中文优先）
 - none: 仅保存 info.json
 
@@ -160,7 +160,7 @@ async def download_video(
                     (
                         ffmpeg
                         .input(str(temp_path))
-                        .output(str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=44100, ac=2)
+                        .output(str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=16000, ac=1)
                         .overwrite_output()
                         .run(quiet=True)
                     )
@@ -225,24 +225,39 @@ async def download_video(
 
         import ffmpeg
         try:
-            if video_ok:
-                v_input = ffmpeg.input(str(output_dir / "video_temp.m4v"))
+            v_temp = output_dir / "video_temp.m4v"
+            a_temp = output_dir / "audio_temp.m4a"
+            v_final = output_dir / "video.mp4"
+
+            if video_ok and audio_ok:
+                v_input = ffmpeg.input(str(v_temp))
+                a_input = ffmpeg.input(str(a_temp))
                 (
                     ffmpeg
-                    .output(v_input, str(output_dir / "video.m4v"), vcodec="copy")
+                    .output(v_input, a_input, str(v_final), vcodec="copy", acodec="aac")
                     .overwrite_output()
                     .run(quiet=True)
                 )
-                (output_dir / "video_temp.m4v").unlink(missing_ok=True)
-            if audio_ok:
-                a_input = ffmpeg.input(str(output_dir / "audio_temp.m4a"))
+                v_temp.unlink(missing_ok=True)
+                a_temp.unlink(missing_ok=True)
+            elif video_ok:
+                v_input = ffmpeg.input(str(v_temp))
                 (
                     ffmpeg
-                    .output(a_input, str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=44100, ac=2)
+                    .output(v_input, str(v_final), vcodec="copy", an=None)
                     .overwrite_output()
                     .run(quiet=True)
                 )
-                (output_dir / "audio_temp.m4a").unlink(missing_ok=True)
+                v_temp.unlink(missing_ok=True)
+            elif audio_ok:
+                a_input = ffmpeg.input(str(a_temp))
+                (
+                    ffmpeg
+                    .output(a_input, str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=16000, ac=1)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+                a_temp.unlink(missing_ok=True)
         except ffmpeg.Error as e:
             console.print(f"[red]ffmpeg 处理失败: {e}[/red]")
             await store.mark("video", bvid, "failed", str(output_dir))

@@ -3,7 +3,7 @@
 
 从B站音频区下载音频，保存为 info.json + audio.wav。
 下载流程：获取元数据 → 获取CDN下载URL → 下载m4a临时文件 →
-ffmpeg转码为PCM 16bit 44100Hz立体声WAV → 删除临时文件。
+ffmpeg转码为PCM 16bit 16kHz单声道WAV → 删除临时文件。
 
 CDN地址从 get_download_url() 返回值中提取，兼容 cdns 列表和 cdn 单值两种格式。
 """
@@ -69,7 +69,7 @@ async def download_audio(
                 (
                     ffmpeg
                     .input(str(temp_path))
-                    .output(str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=44100, ac=2)
+                    .output(str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=16000, ac=1)
                     .overwrite_output()
                     .run(quiet=True)
                 )
