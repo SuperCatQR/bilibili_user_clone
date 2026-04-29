@@ -39,7 +39,7 @@ CREDENTIAL_DIR = Path.home() / ".bilibili-cli"
 CREDENTIAL_FILE = CREDENTIAL_DIR / "credential.json"
 
 # SQLite断点续传数据库目录和路径，可通过环境变量 BILIBILI_CLONE_DB_DIR 覆盖
-DB_DIR = Path(os.environ.get("BILIBILI_CLONE_DB_DIR", str(Path.home() / ".bilibili-cli")))
+DB_DIR = Path(os.environ.get("BILIBILI_CLONE_DB_DIR", ".bilibili-clone"))
 DB_FILE = DB_DIR / "downloads.db"
 
 # 合法的内容类型集合
