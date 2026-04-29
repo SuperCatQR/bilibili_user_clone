@@ -133,7 +133,7 @@ output/<UID>/
 |       +-- info.json            # 视频元数据（所有模式均输出）
 +-- audios/
 |   +-- AU<号> - <标题>/
-|       +-- audio.m4a            # 音频文件
+|       +-- audio.wav             # 音频文件（PCM 16bit WAV）
 |       +-- info.json            # 音频元数据
 +-- articles/
 |   +-- cv<号> - <标题>/
@@ -408,9 +408,9 @@ output/<UID>/
 | `tags` | array | 标签列表，每项含 `id`、`name`、`type` |
 | `type` | int | 类型（1=原创/2=翻唱） |
 
-#### `audio.m4a` -- 音频文件
+#### `audio.wav` -- 音频文件
 
-从 `Audio.get_download_url()` 返回的 CDN 地址下载，优先使用第一个 CDN 节点。
+从 `Audio.get_download_url()` 返回的 CDN 地址下载原始音频，再通过 ffmpeg 转码为 PCM 16bit 44100Hz 立体声 WAV 格式（无压缩、无切分）。
 
 ---
 

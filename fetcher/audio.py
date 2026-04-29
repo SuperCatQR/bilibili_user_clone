@@ -1,4 +1,5 @@
 import json
+import ffmpeg
 from pathlib import Path
 
 from bilibili_api import audio, Credential
@@ -43,8 +44,22 @@ async def download_audio(
             await store.mark("audio", str(auid), "failed", str(output_dir))
             return False
 
-        ok = await download_file(cdns[0], output_dir / "audio.m4a", credential)
+        temp_path = output_dir / "audio_temp.m4a"
+        ok = await download_file(cdns[0], temp_path, credential)
         if ok:
+            try:
+                (
+                    ffmpeg
+                    .input(str(temp_path))
+                    .output(str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=44100, ac=2)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+                temp_path.unlink(missing_ok=True)
+            except ffmpeg.Error as e:
+                console.print(f"[red]音频转WAV失败: {e}[/red]")
+                await store.mark("audio", str(auid), "failed", str(output_dir))
+                return False
             await store.mark("audio", str(auid), "done", str(output_dir))
         else:
             await store.mark("audio", str(auid), "failed", str(output_dir))
