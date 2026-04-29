@@ -33,18 +33,6 @@ pip install -e .
 
 需要系统已安装 [ffmpeg](https://ffmpeg.org/)（仅 video `full` 模式需要合流，其他模式不需要）。
 
-### 运行
-
-```bash
-# 使用 uv
-uv run python main.py clone 946974
-
-# 或使用已安装的虚拟环境
-.venv\Scripts\activate    # Windows
-source .venv/bin/activate # macOS / Linux
-python main.py clone 946974
-```
-
 ### 认证
 
 首次运行会自动启动 QR 码登录，用B站手机 APP 扫码即可。凭据保存在 `~/.bilibili-cli/credential.json`，7 天内免重新登录。
@@ -53,19 +41,19 @@ python main.py clone 946974
 
 ```bash
 # 克隆用户全部内容（视频full模式）
-uv run python main.py clone 946974
+uv run main.py clone 946974
 
 # 只下载最近 48 小时发布的内容
-uv run python main.py clone 946974 --hours 48
+uv run main.py clone 946974 --hours 48
 
 # 只下载视频的字幕和动态
-uv run python main.py clone 946974 --types video,dynamic --video-mode subtitle-only
+uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 
 # 只下载音频和专栏
-uv run python main.py clone 946974 --types audio,article
+uv run main.py clone 946974 --types audio,article
 
 # 视频(仅字幕) + 动态
-uv run python main.py clone 946974 --types video,dynamic --video-mode subtitle-only
+uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 ```
 
 ## CLI 参数
