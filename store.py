@@ -1,11 +1,13 @@
 """
 断点续传存储模块
 
-使用 SQLite 数据库记录每个内容的下载状态，支持中断后重新运行时跳过已完成的项。
+使用 SQLite 数据库记录每个内容的下载状态和枚举缓存，支持中断后重新运行时跳过已完成的项。
 主键为 (uid, content_type, content_id)，status 为 done/skipped 的项在枚举阶段被跳过，
 status 为 failed 的项会被重新尝试。
+enum_cache 表缓存枚举结果，重新运行时无需再次翻页调API。
 """
 
+import json
 import aiosqlite
 from pathlib import Path
 from config import DB_DIR, DB_FILE
@@ -31,6 +33,15 @@ class DownloadStore:
                 output_dir TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (uid, content_type, content_id)
+            )"""
+        )
+        await self._db.execute(
+            """CREATE TABLE IF NOT EXISTS enum_cache (
+                uid INTEGER NOT NULL,
+                content_type TEXT NOT NULL,
+                items_json TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (uid, content_type)
             )"""
         )
         await self._db.commit()
@@ -66,3 +77,27 @@ class DownloadStore:
             (self.uid, content_type, content_id, status, output_dir),
         )
         await self._db.commit()
+
+    async def save_enum_cache(self, content_type: str, items: list):
+        """保存枚举结果缓存。items 为 DownloadItem 列表，序列化为 JSON 存储。"""
+        data = [
+            {"content_type": it.content_type, "content_id": it.content_id,
+             "title": it.title, "extra": it.extra}
+            for it in items
+        ]
+        await self._db.execute(
+            "INSERT OR REPLACE INTO enum_cache (uid, content_type, items_json) VALUES (?, ?, ?)",
+            (self.uid, content_type, json.dumps(data, ensure_ascii=False)),
+        )
+        await self._db.commit()
+
+    async def load_enum_cache(self, content_type: str) -> list[dict] | None:
+        """加载枚举缓存，返回 dict 列表或 None（无缓存时）。"""
+        cursor = await self._db.execute(
+            "SELECT items_json FROM enum_cache WHERE uid=? AND content_type=?",
+            (self.uid, content_type),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])

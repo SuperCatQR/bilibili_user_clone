@@ -53,7 +53,21 @@ async def enumerate_videos(uid: int, credential: Credential, store: DownloadStor
     
     分页遍历 get_videos API，每页30条。遇到 created < cutoff 的跳过，
     整页都早于 cutoff 时终止翻页（提前终止优化）。已完成的项（is_done）跳过。
+    无 --hours 时使用枚举缓存，避免重复翻页。
     """
+    if hours is None:
+        cached = await store.load_enum_cache("video")
+        if cached is not None:
+            result = []
+            for d in cached:
+                if not await store.is_done("video", d["content_id"]):
+                    result.append(DownloadItem(
+                        content_type=d["content_type"], content_id=d["content_id"],
+                        title=d["title"], extra=d["extra"],
+                    ))
+            console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
+            return result
+
     items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -85,6 +99,9 @@ async def enumerate_videos(uid: int, credential: Credential, store: DownloadStor
             break
         pn += 1
         await asyncio.sleep(DEFAULT_INTERVAL)
+
+    if hours is None:
+        await store.save_enum_cache("video", items)
     return items
 
 
@@ -94,7 +111,21 @@ async def enumerate_audios(uid: int, credential: Credential, store: DownloadStor
     
     兼容API返回格式差异：data可能为列表或字典。
     使用 pageCount 判断是否还有下一页。
+    无 --hours 时使用枚举缓存。
     """
+    if hours is None:
+        cached = await store.load_enum_cache("audio")
+        if cached is not None:
+            result = []
+            for d in cached:
+                if not await store.is_done("audio", d["content_id"]):
+                    result.append(DownloadItem(
+                        content_type=d["content_type"], content_id=d["content_id"],
+                        title=d["title"], extra=d["extra"],
+                    ))
+            console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
+            return result
+
     items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -135,11 +166,27 @@ async def enumerate_audios(uid: int, credential: Credential, store: DownloadStor
             break
         pn += 1
         await asyncio.sleep(DEFAULT_INTERVAL)
+
+    if hours is None:
+        await store.save_enum_cache("audio", items)
     return items
 
 
 async def enumerate_articles(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None, retries: int = DEFAULT_RETRY) -> list[DownloadItem]:
-    """枚举用户专栏列表，使用 get_articles API 的 articles 字段。"""
+    """枚举用户专栏列表，使用 get_articles API 的 articles 字段。无 --hours 时使用枚举缓存。"""
+    if hours is None:
+        cached = await store.load_enum_cache("article")
+        if cached is not None:
+            result = []
+            for d in cached:
+                if not await store.is_done("article", d["content_id"]):
+                    result.append(DownloadItem(
+                        content_type=d["content_type"], content_id=d["content_id"],
+                        title=d["title"], extra=d["extra"],
+                    ))
+            console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
+            return result
+
     items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -171,6 +218,9 @@ async def enumerate_articles(uid: int, credential: Credential, store: DownloadSt
             break
         pn += 1
         await asyncio.sleep(DEFAULT_INTERVAL)
+
+    if hours is None:
+        await store.save_enum_cache("article", items)
     return items
 
 
@@ -181,7 +231,21 @@ async def enumerate_dynamics(uid: int, credential: Credential, store: DownloadSt
     使用 offset 分页（非页码），has_more 判断是否继续。
     pub_ts 为发布时间戳（API返回可能为字符串，需强制转int）。
     raw 数据完整保存在 extra 中供下载模块使用。
+    无 --hours 时使用枚举缓存。
     """
+    if hours is None:
+        cached = await store.load_enum_cache("dynamic")
+        if cached is not None:
+            result = []
+            for d in cached:
+                if not await store.is_done("dynamic", d["content_id"]):
+                    result.append(DownloadItem(
+                        content_type=d["content_type"], content_id=d["content_id"],
+                        title=d["title"], extra=d["extra"],
+                    ))
+            console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
+            return result
+
     items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -218,4 +282,7 @@ async def enumerate_dynamics(uid: int, credential: Credential, store: DownloadSt
         if not offset or not has_more:
             break
         await asyncio.sleep(DEFAULT_INTERVAL)
+
+    if hours is None:
+        await store.save_enum_cache("dynamic", items)
     return items
