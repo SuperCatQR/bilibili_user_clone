@@ -1,3 +1,16 @@
+"""
+视频下载模块
+
+支持5种下载模式：
+- full: 下载视频轨+音频轨，分离保存为 video.m4v + audio.wav
+- video-only: 仅下载视频轨 video.m4v
+- audio-only: 仅下载音频轨，转码为 audio.wav (PCM 16bit 44100Hz 立体声)
+- subtitle-only: 仅下载字幕 subtitles.srt（中文优先）
+- none: 仅保存 info.json
+
+所有模式均输出 info.json 元数据文件。
+"""
+
 import json
 import asyncio
 from pathlib import Path
@@ -14,15 +27,13 @@ from config import DEFAULT_INTERVAL
 console = Console()
 
 
-async def _get_cid(v: video.Video) -> int:
-    info = await v.get_info()
-    pages = info.get("pages", [])
-    if pages:
-        return pages[0].get("cid", 0)
-    return 0
-
-
 async def _download_subtitle(v: video.Video, cid: int, output_dir: Path) -> bool:
+    """
+    下载视频字幕并保存为SRT格式。
+    
+    字幕语言优先级：中文（lan以zh开头）> 第一个可用字幕。
+    无字幕时返回 False。
+    """
     try:
         subtitle_info = await v.get_subtitle(cid=cid)
         subtitles = subtitle_info.get("subtitles", [])
@@ -72,6 +83,7 @@ async def _download_subtitle(v: video.Video, cid: int, output_dir: Path) -> bool
 
 
 def _format_srt_time(seconds: float) -> str:
+    """将秒数格式化为SRT时间轴 HH:MM:SS,mmm。"""
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
@@ -87,6 +99,12 @@ async def download_video(
     base_dir: Path,
     video_mode: str = "full",
 ) -> bool:
+    """
+    下载单个视频，根据 video_mode 决定下载内容。
+    
+    返回 True 表示成功（包括 none 模式和 subtitle-only 无字幕标记为 skipped），
+    返回 False 表示失败（下次运行会重试）。
+    """
     bvid = item.content_id
     title = item.title
     dir_name = sanitize_filename(f"{bvid} - {title}")
@@ -105,12 +123,13 @@ async def download_video(
             return True
 
         if video_mode == "subtitle-only":
-            cid = info.get("pages", [{}])[0].get("cid", 0) if info.get("pages") else await _get_cid(v)
+            cid = info.get("pages", [{}])[0].get("cid", 0) if info.get("pages") else 0
             ok = await _download_subtitle(v, cid, output_dir)
             await store.mark("video", bvid, "done" if ok else "skipped", str(output_dir))
             return True
 
-        download_data = await v.get_download_url(cid=info.get("pages", [{}])[0].get("cid", 0) if info.get("pages") else await _get_cid(v))
+        cid = info.get("pages", [{}])[0].get("cid", 0) if info.get("pages") else 0
+        download_data = await v.get_download_url(cid=cid)
         detecter = VideoDownloadURLDataDetecter(download_data)
 
         if video_mode == "audio-only":
@@ -178,15 +197,15 @@ async def download_video(
             await store.mark("video", bvid, "failed", str(output_dir))
             return False
 
-        video_ok = True
-        audio_ok = True
+        video_ok = None
+        audio_ok = None
 
         if video_stream:
             video_ok = await download_file(video_stream.url, output_dir / "video_temp.m4v", credential)
         if audio_stream:
             audio_ok = await download_file(audio_stream.url, output_dir / "audio_temp.m4a", credential)
 
-        if not video_ok or not audio_ok:
+        if (video_stream and not video_ok) or (audio_stream and not audio_ok):
             console.print("[red]音视频下载不完整[/red]")
             await store.mark("video", bvid, "failed", str(output_dir))
             return False

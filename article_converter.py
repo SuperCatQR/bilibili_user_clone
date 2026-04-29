@@ -1,3 +1,10 @@
+"""
+专栏 HTML → Markdown 异步转换器
+
+将B站专栏的 HTML 内容递归转换为 Markdown 格式，
+并将文章中的图片下载到本地 images/ 目录，替换为相对路径引用。
+"""
+
 import re
 import json
 from pathlib import Path
@@ -9,6 +16,17 @@ from bilibili_api import Credential
 
 
 async def _process_element(el: Tag | NavigableString, output_dir: Path, credential: Credential, image_idx: list) -> str:
+    """
+    递归处理单个 HTML 元素，转换为 Markdown 文本。
+    
+    支持的元素映射：h1~h6→标题, p→段落, blockquote→引用,
+    pre/code→代码块, img→下载图片+本地引用, a→链接,
+    strong/b→粗体, em/i→斜体, ul/ol→列表, br→换行,
+    figure→递归, figcaption→斜体说明, 容器标签→递归。
+    
+    Args:
+        image_idx: 可变列表 [counter]，用于为图片递增编号
+    """
     if isinstance(el, NavigableString):
         text = str(el)
         if text.strip() == "":
@@ -110,6 +128,7 @@ async def _process_element(el: Tag | NavigableString, output_dir: Path, credenti
 
 
 async def _process_children(el: Tag, output_dir: Path, credential: Credential, image_idx: list) -> str:
+    """递归处理元素的所有子节点，拼接返回。"""
     result = []
     for child in el.children:
         result.append(await _process_element(child, output_dir, credential, image_idx))
@@ -117,6 +136,12 @@ async def _process_children(el: Tag, output_dir: Path, credential: Credential, i
 
 
 async def html_to_markdown(html: str, output_dir: Path, credential: Credential) -> str:
+    """
+    将专栏 HTML 正文转换为 Markdown。
+    
+    自动定位正文根节点（.article-content / article / body），
+    处理完成后合并多余空行。
+    """
     soup = BeautifulSoup(html, "lxml")
     root = soup.find("div", class_="article-content") or soup.find("article") or soup.body or soup
     image_idx = [0]

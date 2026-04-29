@@ -1,3 +1,11 @@
+"""
+认证模块
+
+负责B站登录凭据的加载、保存和QR码登录。
+凭据保存在 ~/.bilibili-cli/credential.json，有效期由 CREDENTIAL_TTL_DAYS 控制。
+QR码使用小尺寸（box_size=1, border=1）输出，适配终端显示。
+"""
+
 import json
 import time
 import asyncio
@@ -13,6 +21,15 @@ console = Console()
 
 
 def _load_saved_credential() -> Credential | None:
+    """
+    从本地文件加载已保存的凭据。
+    
+    检查项：
+    - 文件是否存在
+    - saved_at 时间戳是否在有效期内
+    - sessdata 是否非空
+    任一检查失败返回 None。
+    """
     if not CREDENTIAL_FILE.exists():
         return None
     try:
@@ -38,6 +55,7 @@ def _load_saved_credential() -> Credential | None:
 
 
 def _save_credential(cred: Credential):
+    """将凭据序列化写入本地文件，同时记录保存时间戳。"""
     CREDENTIAL_DIR.mkdir(parents=True, exist_ok=True)
     data = {
         "sessdata": cred.sessdata or "",
@@ -52,12 +70,30 @@ def _save_credential(cred: Credential):
 
 
 def _print_small_qr(url: str):
+    """
+    用小尺寸ASCII方式在终端打印二维码。
+    
+    使用 qrcode 库的 print_ascii 替代 bilibili_api 默认的 qrcode_terminal 输出，
+    box_size=1, border=1 使二维码更紧凑，适配窄终端。
+    """
     qr = qrcode_lib.QRCode(box_size=1, border=1)
     qr.add_data(url)
     qr.print_ascii(invert=True)
 
 
 async def _qr_login() -> Credential:
+    """
+    执行QR码登录流程。
+    
+    流程：生成二维码 → 轮询扫码状态（每5秒） →
+    - DONE: 返回凭据
+    - TIMEOUT: 重新生成二维码
+    - CONF: 提示用户确认
+    - 其他: 继续等待
+    
+    注意：QR URL 通过名称改写属性 qr._QrCodeLogin__qr_link 访问，
+    因为 bilibili_api 的 QrCodeLogin 类没有公开的 URL getter。
+    """
     console.print("[cyan]启动QR码登录...[/cyan]")
     qr = login_v2.QrCodeLogin(login_v2.QrCodeLoginChannel.WEB)
     await qr.generate_qrcode()
@@ -82,6 +118,11 @@ async def _qr_login() -> Credential:
 
 
 async def ensure_credential() -> Credential:
+    """
+    获取有效凭据，优先使用已保存的凭据，过期或不存在则触发QR码登录。
+    
+    如果已保存凭据缺少 buvid3/buvid4，会自动调用 get_buvid_cookies() 补充。
+    """
     cred = _load_saved_credential()
     if cred:
         console.print("[green]使用已保存的凭据[/green]")

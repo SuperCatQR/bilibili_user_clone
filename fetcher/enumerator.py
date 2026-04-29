@@ -1,3 +1,11 @@
+"""
+枚举模块
+
+分页遍历B站API，收集用户的所有视频/音频/专栏/动态列表。
+支持 --hours 时间过滤（提前终止翻页）和断点续传跳过（is_done）。
+返回 DownloadItem 列表供下载模块逐项处理。
+"""
+
 import asyncio
 import time
 from dataclasses import dataclass
@@ -13,6 +21,7 @@ console = Console()
 
 @dataclass
 class DownloadItem:
+    """待下载内容项。content_id 为BV号/AU号/cv号/动态ID，extra 存放类型特有数据。"""
     content_type: str
     content_id: str
     title: str
@@ -20,10 +29,12 @@ class DownloadItem:
 
 
 def _cutoff(hours: int | None) -> float | None:
+    """将小时数转换为Unix时间戳截止点，hours为None时返回None（不过滤）。"""
     return time.time() - hours * 3600 if hours else None
 
 
 async def _retry_api(fn, retries=DEFAULT_RETRY):
+    """带指数退避的API请求重试，退避上限60秒。"""
     for attempt in range(retries):
         try:
             return await fn()
@@ -37,6 +48,12 @@ async def _retry_api(fn, retries=DEFAULT_RETRY):
 
 
 async def enumerate_videos(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None) -> list[DownloadItem]:
+    """
+    枚举用户视频列表。
+    
+    分页遍历 get_videos API，每页30条。遇到 created < cutoff 的跳过，
+    整页都早于 cutoff 时终止翻页（提前终止优化）。已完成的项（is_done）跳过。
+    """
     items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -72,6 +89,12 @@ async def enumerate_videos(uid: int, credential: Credential, store: DownloadStor
 
 
 async def enumerate_audios(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None) -> list[DownloadItem]:
+    """
+    枚举用户音频区列表。
+    
+    兼容API返回格式差异：data可能为列表或字典。
+    使用 pageCount 判断是否还有下一页。
+    """
     items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -116,6 +139,7 @@ async def enumerate_audios(uid: int, credential: Credential, store: DownloadStor
 
 
 async def enumerate_articles(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None) -> list[DownloadItem]:
+    """枚举用户专栏列表，使用 get_articles API 的 articles 字段。"""
     items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -151,6 +175,13 @@ async def enumerate_articles(uid: int, credential: Credential, store: DownloadSt
 
 
 async def enumerate_dynamics(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None) -> list[DownloadItem]:
+    """
+    枚举用户动态列表。
+    
+    使用 offset 分页（非页码），has_more 判断是否继续。
+    pub_ts 为发布时间戳（API返回可能为字符串，需强制转int）。
+    raw 数据完整保存在 extra 中供下载模块使用。
+    """
     items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)

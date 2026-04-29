@@ -1,3 +1,11 @@
+"""
+动态下载模块
+
+保存动态的完整原始JSON + 摘要info.json + 提取图片。
+支持多种动态类型的图片提取（图文、视频封面、直播间、转发动态）。
+识别嵌入式内容（关联视频/专栏/音频的ID）并记录在info.json的embedded字段中。
+"""
+
 import json
 import re
 from pathlib import Path
@@ -13,10 +21,19 @@ console = Console()
 
 
 def _get_dynamic_type_str(item: dict) -> str:
+    """提取动态类型字符串，如 DYNAMIC_TYPE_AV、DYNAMIC_TYPE_DRAW 等。"""
     return item.get("type", "UNKNOWN")
 
 
 def _extract_embedded_ids(item: dict) -> dict:
+    """
+    从动态中提取关联的其他内容ID。
+    
+    - DYNAMIC_TYPE_AV → bvid/aid
+    - DYNAMIC_TYPE_ARTICLE → cvid
+    - DYNAMIC_TYPE_MUSIC → auid
+    优先从 major 子对象提取，回退到 basic.rid_str。
+    """
     result = {}
     type_str = _get_dynamic_type_str(item)
     basic = item.get("basic", {})
@@ -55,6 +72,17 @@ def _extract_embedded_ids(item: dict) -> dict:
 
 
 async def _download_images_from_item(item: dict, output_dir: Path, credential: Credential) -> list[str]:
+    """
+    从动态对象中提取并下载图片。
+    
+    图片来源优先级：
+    1. major.archive.cover（视频封面）
+    2. desc.text 中的图片URL（正文中的图片链接）
+    3. 整个JSON中正则匹配的图片URL（兜底，最多10张）
+    
+    Returns:
+        下载成功的本地相对路径列表
+    """
     images = []
     draw_items = []
 
@@ -100,15 +128,19 @@ async def download_dynamic(
     credential: Credential,
     store: DownloadStore,
     base_dir: Path,
-    selected_types: set[str],
-) -> list[dict]:
+) -> bool:
+    """
+    下载单条动态。
+    
+    保存完整原始JSON、提取图片、生成摘要info.json。
+    对于图文/视频/直播/转发动态会下载相关图片。
+    返回 True/False 表示成功/失败。
+    """
     dynamic_id = item.content_id
     raw = item.extra.get("raw", {})
     dir_name = sanitize_filename(dynamic_id)
     output_dir = base_dir / "dynamics" / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    embedded_items = []
 
     try:
         json_path = output_dir / "dynamic.json"
@@ -127,12 +159,6 @@ async def download_dynamic(
                     await _download_images_from_item(orig, output_dir, credential)
 
         embedded = _extract_embedded_ids(raw)
-        if type_str == "DYNAMIC_TYPE_AV" and "video" in selected_types and embedded.get("bvid"):
-            embedded_items.append({"content_type": "video", "content_id": embedded["bvid"]})
-        if type_str == "DYNAMIC_TYPE_ARTICLE" and "article" in selected_types and embedded.get("cvid"):
-            embedded_items.append({"content_type": "article", "content_id": embedded["cvid"]})
-        if type_str == "DYNAMIC_TYPE_MUSIC" and "audio" in selected_types and embedded.get("auid"):
-            embedded_items.append({"content_type": "audio", "content_id": embedded["auid"]})
 
         info = {"dynamic_id": dynamic_id, "type": type_str, "embedded": embedded}
         info_path = output_dir / "info.json"

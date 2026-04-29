@@ -1,3 +1,10 @@
+"""
+异步文件下载模块
+
+提供带重试和412指数退避的文件下载功能。
+自动补全 // 开头的URL、携带 Cookie/Referer 头、分块写入磁盘。
+"""
+
 import asyncio
 import aiohttp
 from pathlib import Path
@@ -8,6 +15,10 @@ from config import CHUNK_SIZE, DEFAULT_RETRY, BACKOFF_BASE, BACKOFF_MAX
 
 
 def _build_headers(credential: Credential) -> dict:
+    """
+    构建下载请求头，包含 User-Agent、Referer 和 Cookie。
+    Cookie 从 Credential 对象中提取，用于通过B站的防盗链验证。
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": "https://www.bilibili.com",
@@ -25,6 +36,19 @@ async def download_file(
     credential: Credential,
     retries: int = DEFAULT_RETRY,
 ) -> bool:
+    """
+    异步下载文件到指定路径。
+    
+    特性：
+    - 自动补全 // 开头的URL为 https:
+    - 412 响应触发指数退避重试（5*2^attempt 秒，上限300秒）
+    - 非200响应直接重试
+    - 网络异常（ClientError/TimeoutError）重试
+    - 分块写入（CHUNK_SIZE），避免大文件占满内存
+    
+    Returns:
+        True 下载成功，False 所有重试均失败
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     headers = _build_headers(credential)

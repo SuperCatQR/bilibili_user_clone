@@ -1,3 +1,11 @@
+"""
+专栏下载模块
+
+下载B站专栏文章，保存为 info.json（完整元数据）+ article.md（转换后的Markdown正文）+ images/（内嵌图片）。
+使用 article_converter 将HTML正文转为Markdown，图片自动下载到本地。
+即使文章无正文内容（content为空）也标记为 done。
+"""
+
 import json
 from pathlib import Path
 
@@ -18,6 +26,11 @@ async def download_article(
     store: DownloadStore,
     base_dir: Path,
 ) -> bool:
+    """
+    下载单个专栏文章。
+    
+    调用 get_detail() 获取完整内容，HTML正文经 article_converter 转为Markdown。
+    """
     cvid = int(item.content_id)
     title = item.title
     dir_name = sanitize_filename(f"cv{cvid} - {title}")

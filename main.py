@@ -1,3 +1,10 @@
+"""
+CLI 入口模块
+
+编排完整的 枚举→下载 流水线，输出下载报告。
+使用 Click 定义命令行接口，Rich 输出彩色日志和统计表格。
+"""
+
 import asyncio
 import json
 import sys
@@ -27,6 +34,7 @@ console = Console()
 
 
 async def save_user_info(uid: int, credential, base_dir: Path):
+    """获取并保存用户资料快照到 info.json，同时打印用户名和UID。"""
     u = user.User(uid=uid, credential=credential)
     info = await u.get_user_info()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -37,6 +45,12 @@ async def save_user_info(uid: int, credential, base_dir: Path):
 
 
 async def run_clone(uid: int, output: str, types: str, video_mode: str, interval: int, retry: int, hours: int | None):
+    """
+    主下载流水线。
+    
+    流程：解析参数 → 认证 → 保存用户资料 → 逐类型枚举(分页+时间过滤+跳过已完成) →
+    逐项下载 → 阶梯暂停(每50项) → 输出统计报告。
+    """
     selected_types = set(t.strip() for t in types.split(",") if t.strip() in VALID_TYPES)
     if not selected_types:
         selected_types = VALID_TYPES.copy()
@@ -57,9 +71,15 @@ async def run_clone(uid: int, output: str, types: str, video_mode: str, interval
     await store.open()
 
     try:
-        stats = {"total": 0, "done": 0, "skipped": 0, "failed": 0}
+        stats = {"total": 0, "done": 0, "failed": 0}
 
         async def _process_items(items, download_fn, content_type_label):
+            """
+            遍历并下载一组内容项。
+            
+            每项之间等待 interval 秒，每 BATCH_SIZE 项触发阶梯暂停
+            （5s→10s→15s→20s 循环），避免触发B站412限速。
+            """
             count = 0
             for item in items:
                 stats["total"] += 1
@@ -118,7 +138,7 @@ async def run_clone(uid: int, output: str, types: str, video_mode: str, interval
             console.print(f"  待下载: {len(dynamics)} 条动态")
 
             async def _dl_dynamic(item):
-                return await download_dynamic(item, uid, credential, store, base_dir, selected_types)
+                return await download_dynamic(item, uid, credential, store, base_dir)
             await _process_items(dynamics, _dl_dynamic, "动态")
 
         console.print("\n[bold]===== 下载报告 =====[/bold]")

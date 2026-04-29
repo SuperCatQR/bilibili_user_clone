@@ -1,3 +1,13 @@
+"""
+音频下载模块
+
+从B站音频区下载音频，保存为 info.json + audio.wav。
+下载流程：获取元数据 → 获取CDN下载URL → 下载m4a临时文件 →
+ffmpeg转码为PCM 16bit 44100Hz立体声WAV → 删除临时文件。
+
+CDN地址从 get_download_url() 返回值中提取，兼容 cdns 列表和 cdn 单值两种格式。
+"""
+
 import json
 import ffmpeg
 from pathlib import Path
@@ -19,6 +29,12 @@ async def download_audio(
     store: DownloadStore,
     base_dir: Path,
 ) -> bool:
+    """
+    下载单个音频。
+    
+    先下载原始m4a到临时文件，再用ffmpeg转码为WAV后删除临时文件。
+    转码失败时标记为 failed，下次运行会重试。
+    """
     auid = int(item.content_id)
     title = item.title
     dir_name = sanitize_filename(f"AU{auid} - {title}")
