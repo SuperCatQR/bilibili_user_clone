@@ -568,9 +568,9 @@ output/<UID>/
 
 ### 判断逻辑
 
-- 枚举阶段调用 `store.is_done()` 检查 `status='done'` 的记录，跳过已完成项
+- 枚举阶段调用 `store.is_done()` 检查 `status IN ('done', 'skipped')` 的记录，跳过已完成或跳过的项
 - 下载完成后调用 `store.mark()` 写入状态（`done`/`failed`/`skipped`）
-- 重复运行时，已 `done` 的项不会重复下载；`failed` 的项会重新尝试
+- 重复运行时，已 `done` 或 `skipped` 的项不会重复下载；`failed` 的项会重新尝试
 
 ### 凭证存储
 

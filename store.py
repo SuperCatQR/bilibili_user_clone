@@ -30,7 +30,7 @@ class DownloadStore:
 
     async def is_done(self, content_type: str, content_id: str) -> bool:
         cursor = await self._db.execute(
-            "SELECT status FROM downloads WHERE uid=? AND content_type=? AND content_id=? AND status='done'",
+            "SELECT status FROM downloads WHERE uid=? AND content_type=? AND content_id=? AND status IN ('done', 'skipped')",
             (self.uid, content_type, content_id),
         )
         row = await cursor.fetchone()

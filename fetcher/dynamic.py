@@ -139,9 +139,9 @@ async def download_dynamic(
         info_path.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
 
         await store.mark("dynamic", dynamic_id, "done", str(output_dir))
-        return embedded_items
+        return True
 
     except Exception as e:
         console.print(f"[red]动态 {dynamic_id} 处理失败: {e}[/red]")
         await store.mark("dynamic", dynamic_id, "failed", str(output_dir))
-        return embedded_items
+        return False
