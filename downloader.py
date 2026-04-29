@@ -10,8 +10,11 @@ import aiohttp
 from pathlib import Path
 
 from bilibili_api import Credential
+from rich.console import Console
 
 from config import CHUNK_SIZE, DEFAULT_RETRY, BACKOFF_BASE, BACKOFF_MAX
+
+console = Console()
 
 
 def _build_headers(credential: Credential) -> dict:
@@ -62,21 +65,18 @@ async def download_file(
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=300)) as resp:
                     if resp.status == 412:
                         wait = min(BACKOFF_BASE * (2 ** attempt), BACKOFF_MAX)
-                        from rich.console import Console
-                        Console().print(f"[yellow]412 限速，等待 {wait}s...[/yellow]")
+                        console.print(f"[yellow]412 限速，等待 {wait}s...[/yellow]")
                         await asyncio.sleep(wait)
                         continue
                     if resp.status != 200:
-                        from rich.console import Console
-                        Console().print(f"[red]HTTP {resp.status}[/red]")
+                        console.print(f"[red]HTTP {resp.status}[/red]")
                         continue
                     with open(output_path, "wb") as f:
                         async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
                             f.write(chunk)
                     return True
         except (aiohttp.ClientError, asyncio.TimeoutError, AssertionError) as e:
-            from rich.console import Console
-            Console().print(f"[yellow]网络异常: {e}，重试...[/yellow]")
+            console.print(f"[yellow]网络异常: {e}，重试...[/yellow]")
             await asyncio.sleep(2)
 
     return False

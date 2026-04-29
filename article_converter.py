@@ -6,13 +6,14 @@
 """
 
 import re
-import json
 from pathlib import Path
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
 from downloader import download_file
 from bilibili_api import Credential
+
+_retries = 3
 
 
 async def _process_element(el: Tag | NavigableString, output_dir: Path, credential: Credential, image_idx: list) -> str:
@@ -77,7 +78,7 @@ async def _process_element(el: Tag | NavigableString, output_dir: Path, credenti
             ext = ext_match.group(1) if ext_match else "jpg"
             filename = f"img_{image_idx[0]}.{ext}"
             local_path = image_dir / filename
-            ok = await download_file(src, local_path, credential)
+            ok = await download_file(src, local_path, credential, retries=_retries)
             if ok:
                 return f"\n\n![{alt}](images/{filename})\n\n"
             else:
@@ -135,13 +136,15 @@ async def _process_children(el: Tag, output_dir: Path, credential: Credential, i
     return "".join(result)
 
 
-async def html_to_markdown(html: str, output_dir: Path, credential: Credential) -> str:
+async def html_to_markdown(html: str, output_dir: Path, credential: Credential, retries: int = 3) -> str:
     """
     将专栏 HTML 正文转换为 Markdown。
     
     自动定位正文根节点（.article-content / article / body），
     处理完成后合并多余空行。
     """
+    global _retries
+    _retries = retries
     soup = BeautifulSoup(html, "lxml")
     root = soup.find("div", class_="article-content") or soup.find("article") or soup.body or soup
     image_idx = [0]

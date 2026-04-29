@@ -18,6 +18,7 @@ from rich.console import Console
 from downloader import download_file
 from store import DownloadStore
 from utils import sanitize_filename
+from config import DEFAULT_RETRY
 
 console = Console()
 
@@ -28,6 +29,7 @@ async def download_audio(
     credential: Credential,
     store: DownloadStore,
     base_dir: Path,
+    retries: int = DEFAULT_RETRY,
 ) -> bool:
     """
     下载单个音频。
@@ -61,7 +63,7 @@ async def download_audio(
             return False
 
         temp_path = output_dir / "audio_temp.m4a"
-        ok = await download_file(cdns[0], temp_path, credential)
+        ok = await download_file(cdns[0], temp_path, credential, retries=retries)
         if ok:
             try:
                 (
@@ -74,6 +76,7 @@ async def download_audio(
                 temp_path.unlink(missing_ok=True)
             except ffmpeg.Error as e:
                 console.print(f"[red]音频转WAV失败: {e}[/red]")
+                temp_path.unlink(missing_ok=True)
                 await store.mark("audio", str(auid), "failed", str(output_dir))
                 return False
             await store.mark("audio", str(auid), "done", str(output_dir))

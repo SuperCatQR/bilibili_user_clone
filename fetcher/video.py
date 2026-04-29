@@ -22,7 +22,7 @@ from rich.console import Console
 from downloader import download_file
 from store import DownloadStore
 from utils import sanitize_filename
-from config import DEFAULT_INTERVAL
+from config import DEFAULT_RETRY
 
 console = Console()
 
@@ -98,6 +98,7 @@ async def download_video(
     store: DownloadStore,
     base_dir: Path,
     video_mode: str = "full",
+    retries: int = DEFAULT_RETRY,
 ) -> bool:
     """
     下载单个视频，根据 video_mode 决定下载内容。
@@ -124,11 +125,19 @@ async def download_video(
 
         if video_mode == "subtitle-only":
             cid = info.get("pages", [{}])[0].get("cid", 0) if info.get("pages") else 0
+            if not cid:
+                console.print("[yellow]无法获取CID[/yellow]")
+                await store.mark("video", bvid, "skipped", str(output_dir))
+                return True
             ok = await _download_subtitle(v, cid, output_dir)
             await store.mark("video", bvid, "done" if ok else "skipped", str(output_dir))
             return True
 
         cid = info.get("pages", [{}])[0].get("cid", 0) if info.get("pages") else 0
+        if not cid:
+            console.print("[red]无法获取CID，跳过下载[/red]")
+            await store.mark("video", bvid, "failed", str(output_dir))
+            return False
         download_data = await v.get_download_url(cid=cid)
         detecter = VideoDownloadURLDataDetecter(download_data)
 
@@ -144,7 +153,7 @@ async def download_video(
                 await store.mark("video", bvid, "failed", str(output_dir))
                 return False
             temp_path = output_dir / "audio_temp.m4a"
-            ok = await download_file(audio_stream.url, temp_path, credential)
+            ok = await download_file(audio_stream.url, temp_path, credential, retries=retries)
             if ok:
                 import ffmpeg
                 try:
@@ -158,10 +167,12 @@ async def download_video(
                     temp_path.unlink(missing_ok=True)
                 except ffmpeg.Error as e:
                     console.print(f"[red]音频转WAV失败: {e}[/red]")
+                    temp_path.unlink(missing_ok=True)
                     await store.mark("video", bvid, "failed", str(output_dir))
                     return False
                 await store.mark("video", bvid, "done", str(output_dir))
             else:
+                temp_path.unlink(missing_ok=True)
                 await store.mark("video", bvid, "failed", str(output_dir))
             return ok
 
@@ -176,7 +187,7 @@ async def download_video(
                 console.print("[red]未找到视频流[/red]")
                 await store.mark("video", bvid, "failed", str(output_dir))
                 return False
-            ok = await download_file(video_stream.url, output_dir / "video.m4v", credential)
+            ok = await download_file(video_stream.url, output_dir / "video.m4v", credential, retries=retries)
             if ok:
                 await store.mark("video", bvid, "done", str(output_dir))
             else:
@@ -201,12 +212,14 @@ async def download_video(
         audio_ok = None
 
         if video_stream:
-            video_ok = await download_file(video_stream.url, output_dir / "video_temp.m4v", credential)
+            video_ok = await download_file(video_stream.url, output_dir / "video_temp.m4v", credential, retries=retries)
         if audio_stream:
-            audio_ok = await download_file(audio_stream.url, output_dir / "audio_temp.m4a", credential)
+            audio_ok = await download_file(audio_stream.url, output_dir / "audio_temp.m4a", credential, retries=retries)
 
         if (video_stream and not video_ok) or (audio_stream and not audio_ok):
             console.print("[red]音视频下载不完整[/red]")
+            (output_dir / "video_temp.m4v").unlink(missing_ok=True)
+            (output_dir / "audio_temp.m4a").unlink(missing_ok=True)
             await store.mark("video", bvid, "failed", str(output_dir))
             return False
 

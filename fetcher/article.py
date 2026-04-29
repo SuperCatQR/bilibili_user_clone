@@ -15,6 +15,7 @@ from rich.console import Console
 from article_converter import html_to_markdown
 from store import DownloadStore
 from utils import sanitize_filename
+from config import DEFAULT_RETRY
 
 console = Console()
 
@@ -25,6 +26,7 @@ async def download_article(
     credential: Credential,
     store: DownloadStore,
     base_dir: Path,
+    retries: int = DEFAULT_RETRY,
 ) -> bool:
     """
     下载单个专栏文章。
@@ -47,7 +49,7 @@ async def download_article(
         info_path.write_text(json.dumps(detail, ensure_ascii=False, indent=2), encoding="utf-8")
 
         if html_content:
-            md = await html_to_markdown(html_content, output_dir, credential)
+            md = await html_to_markdown(html_content, output_dir, credential, retries=retries)
             md_path = output_dir / "article.md"
             md_path.write_text(md, encoding="utf-8")
         else:

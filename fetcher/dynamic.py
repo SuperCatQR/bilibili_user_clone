@@ -16,6 +16,7 @@ from rich.console import Console
 from downloader import download_file
 from store import DownloadStore
 from utils import sanitize_filename
+from config import DEFAULT_RETRY
 
 console = Console()
 
@@ -71,7 +72,7 @@ def _extract_embedded_ids(item: dict) -> dict:
     return result
 
 
-async def _download_images_from_item(item: dict, output_dir: Path, credential: Credential) -> list[str]:
+async def _download_images_from_item(item: dict, output_dir: Path, credential: Credential, retries: int = DEFAULT_RETRY) -> list[str]:
     """
     从动态对象中提取并下载图片。
     
@@ -115,7 +116,7 @@ async def _download_images_from_item(item: dict, output_dir: Path, credential: C
         ext = ext_match.group(1) if ext_match else "jpg"
         filename = f"img_{i}.{ext}"
         local_path = image_dir / filename
-        ok = await download_file(url, local_path, credential)
+        ok = await download_file(url, local_path, credential, retries=retries)
         if ok:
             images.append(f"images/{filename}")
 
@@ -128,6 +129,7 @@ async def download_dynamic(
     credential: Credential,
     store: DownloadStore,
     base_dir: Path,
+    retries: int = DEFAULT_RETRY,
 ) -> bool:
     """
     下载单条动态。
@@ -149,14 +151,14 @@ async def download_dynamic(
         type_str = _get_dynamic_type_str(raw)
 
         if type_str in ("DYNAMIC_TYPE_DRAW", "DYNAMIC_TYPE_LIVE_RCMD", "DYNAMIC_TYPE_AV"):
-            await _download_images_from_item(raw, output_dir, credential)
+            await _download_images_from_item(raw, output_dir, credential, retries=retries)
 
         if type_str == "DYNAMIC_TYPE_FORWARD":
             orig = raw.get("orig", {})
             if isinstance(orig, dict) and orig:
                 orig_type = _get_dynamic_type_str(orig)
                 if orig_type in ("DYNAMIC_TYPE_DRAW", "DYNAMIC_TYPE_AV"):
-                    await _download_images_from_item(orig, output_dir, credential)
+                    await _download_images_from_item(orig, output_dir, credential, retries=retries)
 
         embedded = _extract_embedded_ids(raw)
 

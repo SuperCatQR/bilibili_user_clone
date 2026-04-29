@@ -47,7 +47,7 @@ async def _retry_api(fn, retries=DEFAULT_RETRY):
                 raise
 
 
-async def enumerate_videos(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None) -> list[DownloadItem]:
+async def enumerate_videos(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None, retries: int = DEFAULT_RETRY) -> list[DownloadItem]:
     """
     枚举用户视频列表。
     
@@ -59,7 +59,7 @@ async def enumerate_videos(uid: int, credential: Credential, store: DownloadStor
     u = user.User(uid=uid, credential=credential)
     pn = 1
     while True:
-        resp = await _retry_api(lambda: u.get_videos(pn=pn, ps=30))
+        resp = await _retry_api(lambda: u.get_videos(pn=pn, ps=30), retries=retries)
         vlist = resp.get("list", {}).get("vlist", [])
         if not vlist:
             break
@@ -88,7 +88,7 @@ async def enumerate_videos(uid: int, credential: Credential, store: DownloadStor
     return items
 
 
-async def enumerate_audios(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None) -> list[DownloadItem]:
+async def enumerate_audios(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None, retries: int = DEFAULT_RETRY) -> list[DownloadItem]:
     """
     枚举用户音频区列表。
     
@@ -100,7 +100,7 @@ async def enumerate_audios(uid: int, credential: Credential, store: DownloadStor
     u = user.User(uid=uid, credential=credential)
     pn = 1
     while True:
-        resp = await _retry_api(lambda: u.get_audios(pn=pn, ps=30))
+        resp = await _retry_api(lambda: u.get_audios(pn=pn, ps=30), retries=retries)
         data = resp.get("data", resp)
         if isinstance(data, list):
             aulist = data
@@ -138,14 +138,14 @@ async def enumerate_audios(uid: int, credential: Credential, store: DownloadStor
     return items
 
 
-async def enumerate_articles(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None) -> list[DownloadItem]:
+async def enumerate_articles(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None, retries: int = DEFAULT_RETRY) -> list[DownloadItem]:
     """枚举用户专栏列表，使用 get_articles API 的 articles 字段。"""
     items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
     pn = 1
     while True:
-        resp = await _retry_api(lambda: u.get_articles(pn=pn, ps=30))
+        resp = await _retry_api(lambda: u.get_articles(pn=pn, ps=30), retries=retries)
         article_list = resp.get("articles", [])
         if not article_list:
             break
@@ -174,7 +174,7 @@ async def enumerate_articles(uid: int, credential: Credential, store: DownloadSt
     return items
 
 
-async def enumerate_dynamics(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None) -> list[DownloadItem]:
+async def enumerate_dynamics(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None, retries: int = DEFAULT_RETRY) -> list[DownloadItem]:
     """
     枚举用户动态列表。
     
@@ -187,7 +187,7 @@ async def enumerate_dynamics(uid: int, credential: Credential, store: DownloadSt
     u = user.User(uid=uid, credential=credential)
     offset = ""
     while True:
-        resp = await _retry_api(lambda: u.get_dynamics_new(offset=offset))
+        resp = await _retry_api(lambda: u.get_dynamics_new(offset=offset), retries=retries)
         dynamic_items = resp.get("items", [])
         has_more = resp.get("has_more", False)
         if not dynamic_items:

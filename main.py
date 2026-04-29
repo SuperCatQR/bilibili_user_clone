@@ -107,38 +107,38 @@ async def run_clone(uid: int, output: str, types: str, video_mode: str, interval
 
         if "video" in selected_types:
             console.print("\n[bold]枚举视频...[/bold]")
-            videos = await enumerate_videos(uid, credential, store, hours)
+            videos = await enumerate_videos(uid, credential, store, hours, retries=retry)
             console.print(f"  待下载: {len(videos)} 个视频")
 
             async def _dl_video(item):
-                return await download_video(item, uid, credential, store, base_dir, video_mode)
+                return await download_video(item, uid, credential, store, base_dir, video_mode, retries=retry)
             await _process_items(videos, _dl_video, "视频")
 
         if "audio" in selected_types:
             console.print("\n[bold]枚举音频...[/bold]")
-            audios = await enumerate_audios(uid, credential, store, hours)
+            audios = await enumerate_audios(uid, credential, store, hours, retries=retry)
             console.print(f"  待下载: {len(audios)} 个音频")
 
             async def _dl_audio(item):
-                return await download_audio(item, uid, credential, store, base_dir)
+                return await download_audio(item, uid, credential, store, base_dir, retries=retry)
             await _process_items(audios, _dl_audio, "音频")
 
         if "article" in selected_types:
             console.print("\n[bold]枚举专栏...[/bold]")
-            articles = await enumerate_articles(uid, credential, store, hours)
+            articles = await enumerate_articles(uid, credential, store, hours, retries=retry)
             console.print(f"  待下载: {len(articles)} 个专栏")
 
             async def _dl_article(item):
-                return await download_article(item, uid, credential, store, base_dir)
+                return await download_article(item, uid, credential, store, base_dir, retries=retry)
             await _process_items(articles, _dl_article, "专栏")
 
         if "dynamic" in selected_types:
             console.print("\n[bold]枚举动态...[/bold]")
-            dynamics = await enumerate_dynamics(uid, credential, store, hours)
+            dynamics = await enumerate_dynamics(uid, credential, store, hours, retries=retry)
             console.print(f"  待下载: {len(dynamics)} 条动态")
 
             async def _dl_dynamic(item):
-                return await download_dynamic(item, uid, credential, store, base_dir)
+                return await download_dynamic(item, uid, credential, store, base_dir, retries=retry)
             await _process_items(dynamics, _dl_dynamic, "动态")
 
         console.print("\n[bold]===== 下载报告 =====[/bold]")
