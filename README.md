@@ -80,6 +80,29 @@ uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 
 `--types` 不含 `video` 时，`--video-mode` 无效。
 
+## 项目架构
+
+```
+bilibili_user_clone/
+├── main.py                  # CLI入口，Click命令定义，编排完整的枚举→下载流水线
+├── config.py                # 全局常量：请求间隔、重试策略、文件名长度、凭证路径、数据库路径
+├── auth.py                  # 认证模块：已保存凭据→QR码登录；凭据7天过期自动重新登录
+├── store.py                 # DownloadStore类：SQLite断点续传，批量提交优化，枚举缓存过期机制
+├── downloader.py            # 异步文件下载器：412指数退避，共享Session复用，Range分段下载
+├── utils.py                 # 工具函数：sanitize_filename()清理文件名
+├── article_converter.py     # HTML→Markdown转换器：递归处理标签，图片下载到本地
+├── fetcher/
+│   ├── __init__.py          # 包初始化文件
+│   ├── enumerator.py        # 四个枚举函数：分页遍历API，时间过滤，缓存新鲜度检查
+│   ├── video.py             # 视频下载：5种模式，多分P支持，ffmpeg合流
+│   ├── audio.py             # 音频下载：CDN地址提取，ffmpeg转码WAV
+│   ├── article.py           # 专栏下载：HTML→Markdown转换，图片本地化
+│   └── dynamic.py           # 动态下载：原始JSON+图片提取+嵌入式内容识别
+├── pyproject.toml           # 项目配置和依赖声明
+├── .gitignore               # Git忽略规则
+└── README.md                # 本文件
+```
+
 ## 实现逻辑
 
 ### 整体流水线
@@ -105,6 +128,27 @@ uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 - **批量提交优化**：SQLite操作支持批量提交，每100次操作自动提交一次，提高性能
 - **安全性增强**：凭据文件和目录设置权限（Unix系统），仅所有者可访问
 
+### 限速策略详解
+
+B站API有严格的频率限制，本项目采用多层限速策略：
+
+1. **基础间隔**：每项下载间隔3秒（`DEFAULT_INTERVAL`）
+2. **阶梯暂停**：每50项（`BATCH_SIZE`）触发一次阶梯暂停
+   - 第1次暂停：5秒
+   - 第2次暂停：10秒
+   - 第3次暂停：15秒
+   - 第4次暂停：20秒
+   - 之后循环：5→10→15→20→5→10→...
+3. **412退避**：收到412响应时，等待 `5 * 2^attempt` 秒（上限300秒）
+4. **网络异常退避**：网络错误时，等待 `2 * 2^attempt` 秒（上限30秒）
+
+### 缓存策略
+
+- **枚举缓存**：枚举结果缓存到SQLite，避免重复调用API翻页
+- **缓存过期**：默认24小时（`CACHE_TTL_HOURS`），可通过环境变量配置
+- **新鲜度检查**：无`--hours`时，先查API第一页，有新增内容才完整重新枚举
+- **状态隔离**：已完成（`done`/`skipped`）的项在枚举阶段被跳过
+
 ## 模块说明
 
 | 文件 | 功能 |
@@ -113,7 +157,7 @@ uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 | `config.py` | 全局常量：请求间隔、重试策略、文件名长度、凭证路径、数据库路径、合法类型/模式 |
 | `auth.py` | 两级认证：已保存凭据 -> QR 码登录；凭据 7 天过期自动重新登录；自动补充 buvid3/buvid4；Unix系统上设置文件权限 |
 | `store.py` | `DownloadStore` 类，SQLite 断点续传：`is_done()` 查询、`mark()` 记录状态，支持批量提交优化，枚举缓存支持过期机制 |
-| `downloader.py` | 异步文件下载器，自动补全 `//` 前缀 URL，携带 Cookie/Referer，412 指数退避，支持共享Session复用TCP连接 |
+| `downloader.py` | 异步文件下载器，自动补全 `//` 前缀 URL，携带 Cookie/Referer，412 指数退避，支持共享Session复用TCP连接，Range分段下载回退 |
 | `utils.py` | `sanitize_filename()`：去除非法字符、压缩空白、截断超长文件名 |
 | `article_converter.py` | HTML -> Markdown 异步转换器，递归处理标题/段落/代码块/列表/图片等元素，图片下载到本地 `images/` 目录，重试参数显式传递避免全局变量污染 |
 | `fetcher/enumerator.py` | 四个枚举函数，分页遍历 API 返回 `DownloadItem` 列表，支持 `--hours` 时间过滤和 `_retry_api()` 重试（记录完整traceback），使用通用缓存加载函数减少重复代码 |
@@ -121,6 +165,32 @@ uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 | `fetcher/audio.py` | 音频下载，从 `get_download_url()` 响应中提取 CDN 地址，ffmpeg异常处理包含FileNotFoundError |
 | `fetcher/article.py` | 专栏下载，调用 `get_detail()` 获取内容，经 `article_converter` 转为 Markdown |
 | `fetcher/dynamic.py` | 动态下载，保存原始 JSON + 提取图片 + 识别嵌入式内容（关联视频/专栏/音频的 ID） |
+
+## 依赖说明
+
+### Python 依赖
+
+项目使用 `pyproject.toml` 管理依赖，主要依赖包括：
+
+| 包名 | 用途 |
+|------|------|
+| `bilibili-api` | B站API封装，提供视频/音频/专栏/动态的接口 |
+| `bilibili-cli` | B站CLI工具，提供认证和API辅助功能 |
+| `click` | CLI框架，定义命令行参数和子命令 |
+| `rich` | 终端美化，彩色日志和表格输出 |
+| `aiohttp` | 异步HTTP客户端，文件下载 |
+| `aiosqlite` | SQLite异步包装器，断点续传存储 |
+| `beautifulsoup4` | HTML解析器，专栏内容转换 |
+| `lxml` | HTML解析器后端，速度快容错性好 |
+| `qrcode` | 二维码生成，终端QR码登录 |
+| `python-ffmpeg` | ffmpeg Python封装，音视频转码 |
+
+### 系统依赖
+
+| 依赖 | 用途 | 安装方式 |
+|------|------|----------|
+| `ffmpeg` | 音视频合流和转码 | [官网下载](https://ffmpeg.org/) 或包管理器安装 |
+| `Python 3.10+` | 运行环境 | [官网下载](https://www.python.org/) |
 
 ## 输出目录结构与文件详解
 
@@ -610,3 +680,18 @@ videos/<BV号> - <标题>/
 |----------|--------|------|
 | `BILIBILI_CLONE_DB_DIR` | `.bilibili-clone` | SQLite数据库目录路径 |
 | `BILIBILI_CLONE_CACHE_TTL_HOURS` | `24` | 枚举缓存过期时间（小时） |
+
+## 代码注释说明
+
+本项目所有Python脚本均添加了详细的中文注释，遵循"古法编程"理念：
+
+- **模块级注释**：每个文件顶部的docstring说明模块功能、设计原理和使用方法
+- **函数级注释**：每个函数的docstring说明参数、返回值、异常和实现细节
+- **行内注释**：关键逻辑处添加注释解释"为什么"而非"是什么"
+- **设计决策注释**：解释技术选型的原因（如为什么选择SQLite、为什么使用指数退避等）
+
+注释风格：
+- 使用中文注释，便于中文开发者理解
+- 解释底层实现原理（如HTTP 412状态码、指数退避算法等）
+- 标注边界情况和异常处理
+- 说明性能优化策略
