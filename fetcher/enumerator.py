@@ -20,6 +20,15 @@ from store import DownloadStore
 console = Console()
 
 
+@dataclass
+class DownloadItem:
+    """待下载内容项。content_id 为BV号/AU号/cv号/动态ID，extra 存放类型特有数据。"""
+    content_type: str
+    content_id: str
+    title: str
+    extra: dict
+
+
 async def _load_cached_items(content_type: str, store: DownloadStore) -> list[DownloadItem] | None:
     """
     从缓存加载指定类型的下载项，过滤掉已完成的项。
@@ -44,15 +53,6 @@ async def _load_cached_items(content_type: str, store: DownloadStore) -> list[Do
             ))
     console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
     return result
-
-
-@dataclass
-class DownloadItem:
-    """待下载内容项。content_id 为BV号/AU号/cv号/动态ID，extra 存放类型特有数据。"""
-    content_type: str
-    content_id: str
-    title: str
-    extra: dict
 
 
 def _cutoff(hours: int | None) -> float | None:
