@@ -56,7 +56,23 @@ uv run main.py clone 946974 --types audio,article
 uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 ```
 
-## CLI 参数
+### 更新缓存
+
+```bash
+# 强制刷新所有类型的枚举缓存（不下载）
+uv run main.py update-cache 946974
+
+# 只刷新视频缓存
+uv run main.py update-cache 946974 --types video
+```
+
+## CLI 命令
+
+### `clone` -- 克隆用户内容
+
+```bash
+uv run main.py clone <UID> [选项]
+```
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -67,6 +83,18 @@ uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 | `--interval` | `3` | 请求间隔（秒） |
 | `--retry` | `3` | API 请求重试次数 |
 | `--hours` | 不限 | 只下载指定小时内发布的内容 |
+
+### `update-cache` -- 更新枚举缓存
+
+```bash
+uv run main.py update-cache <UID> [选项]
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `UID` | 必填 | 目标用户 UID |
+| `--types` | `video,audio,article,dynamic` | 内容类型，逗号分隔 |
+| `--retry` | `3` | API 请求重试次数 |
 
 ## 视频模式
 
@@ -125,6 +153,7 @@ bilibili_user_clone/
 - **多分P视频支持**：自动检测并下载多分P视频的全部分P，每个分P创建独立子目录
 - **枚举缓存过期**：枚举结果缓存默认24小时过期，避免重复调用API，可通过环境变量配置
 - **共享Session复用**：使用共享的aiohttp.ClientSession复用TCP连接，提高下载效率
+- **Range分段下载回退**：某些CDN节点会中途切断长连接大文件传输，下载失败时自动回退到 HTTP Range 分段下载（1MB/段），确保文件完整性
 - **批量提交优化**：SQLite操作支持批量提交，每100次操作自动提交一次，提高性能
 - **安全性增强**：凭据文件和目录设置权限（Unix系统），仅所有者可访问
 
@@ -144,10 +173,13 @@ B站API有严格的频率限制，本项目采用多层限速策略：
 
 ### 缓存策略
 
-- **枚举缓存**：枚举结果缓存到SQLite，避免重复调用API翻页
+- **枚举缓存**：枚举结果缓存到 SQLite，避免重复调用API翻页
 - **缓存过期**：默认24小时（`CACHE_TTL_HOURS`），可通过环境变量配置
-- **新鲜度检查**：无`--hours`时，先查API第一页，有新增内容才完整重新枚举
+- **新鲜度检查**：无 `--hours` 时，先查API第一页判断是否有新增内容
+  - 无新增：直接使用缓存，秒级返回
+  - 有新增：**增量更新**——只翻页到遇到缓存中已有的内容为止，新内容追加到缓存，不遍历全部历史
 - **状态隔离**：已完成（`done`/`skipped`）的项在枚举阶段被跳过
+- **强制刷新**：`update-cache` 命令可手动强制完整重新枚举并更新缓存
 
 ## 模块说明
 
