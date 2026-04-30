@@ -23,7 +23,31 @@ console = Console()
 
 def _get_dynamic_type_str(item: dict) -> str:
     """提取动态类型字符串，如 DYNAMIC_TYPE_AV、DYNAMIC_TYPE_DRAW 等。"""
+    if not item:
+        return "UNKNOWN"
     return item.get("type", "UNKNOWN")
+
+
+def _safe_get_nested(data: dict, *keys, default=None):
+    """
+    安全地获取嵌套字典中的值，避免NoneType错误。
+    
+    Args:
+        data: 字典对象
+        *keys: 嵌套的键路径
+        default: 默认值
+    
+    Returns:
+        嵌套键对应的值，如果任何中间键不存在或为None则返回default
+    """
+    current = data
+    for key in keys:
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key)
+        if current is None:
+            return default
+    return current if current is not None else default
 
 
 def _extract_embedded_ids(item: dict) -> dict:
@@ -36,15 +60,18 @@ def _extract_embedded_ids(item: dict) -> dict:
     优先从 major 子对象提取，回退到 basic.rid_str。
     """
     result = {}
+    if not item:
+        return result
+        
     type_str = _get_dynamic_type_str(item)
-    basic = item.get("basic", {})
+    basic = item.get("basic") or {}
+    rid_str = basic.get("rid_str", "") if isinstance(basic, dict) else ""
 
     if type_str == "DYNAMIC_TYPE_AV":
-        rid_str = basic.get("rid_str", "")
-        major = item.get("modules", {}).get("module_dynamic", {}).get("major", {})
+        major = _safe_get_nested(item, "modules", "module_dynamic", "major", default={})
         archive = major.get("archive", {}) if isinstance(major, dict) else {}
-        bvid = archive.get("bvid", "")
-        aid = archive.get("aid", "")
+        bvid = archive.get("bvid", "") if isinstance(archive, dict) else ""
+        aid = archive.get("aid", "") if isinstance(archive, dict) else ""
         if bvid:
             result["bvid"] = bvid
         elif aid:
@@ -52,19 +79,17 @@ def _extract_embedded_ids(item: dict) -> dict:
         if rid_str:
             result.setdefault("aid", rid_str)
     elif type_str == "DYNAMIC_TYPE_ARTICLE":
-        major = item.get("modules", {}).get("module_dynamic", {}).get("major", {})
+        major = _safe_get_nested(item, "modules", "module_dynamic", "major", default={})
         article = major.get("article", {}) if isinstance(major, dict) else {}
-        cvid = article.get("id", "")
-        rid_str = basic.get("rid_str", "")
+        cvid = article.get("id", "") if isinstance(article, dict) else ""
         if cvid:
             result["cvid"] = str(cvid)
         elif rid_str:
             result["cvid"] = rid_str
     elif type_str == "DYNAMIC_TYPE_MUSIC":
-        major = item.get("modules", {}).get("module_dynamic", {}).get("major", {})
+        major = _safe_get_nested(item, "modules", "module_dynamic", "major", default={})
         music = major.get("music", {}) if isinstance(major, dict) else {}
-        auid = music.get("id", "")
-        rid_str = basic.get("rid_str", "")
+        auid = music.get("id", "") if isinstance(music, dict) else ""
         if auid:
             result["auid"] = str(auid)
         elif rid_str:
@@ -87,8 +112,11 @@ async def _download_images_from_item(item: dict, output_dir: Path, credential: C
     images = []
     draw_items = []
 
-    dyn_module = item.get("modules", {}).get("module_dynamic", {})
-    major = dyn_module.get("major", {})
+    if not item:
+        return images
+
+    dyn_module = _safe_get_nested(item, "modules", "module_dynamic", default={})
+    major = dyn_module.get("major", {}) if isinstance(dyn_module, dict) else {}
     if isinstance(major, dict):
         archive = major.get("archive", {})
         if isinstance(archive, dict):
@@ -96,7 +124,7 @@ async def _download_images_from_item(item: dict, output_dir: Path, credential: C
             if cover:
                 draw_items.append(cover)
 
-    desc_module = item.get("modules", {}).get("module_dynamic", {}).get("desc", {})
+    desc_module = _safe_get_nested(item, "modules", "module_dynamic", "desc", default={})
     if isinstance(desc_module, dict):
         text = desc_module.get("text", "")
         if isinstance(text, str):
@@ -108,10 +136,15 @@ async def _download_images_from_item(item: dict, output_dir: Path, credential: C
         urls = re.findall(r'https?://[^\s"]+\.(?:jpg|jpeg|png|gif|webp)', item_str)
         draw_items = list(set(urls))[:10]
 
+    if not draw_items:
+        return images
+
     image_dir = output_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
 
     for i, url in enumerate(draw_items, 1):
+        if not url:
+            continue
         ext_match = re.search(r"\.(jpg|jpeg|png|gif|webp)", url, re.IGNORECASE)
         ext = ext_match.group(1) if ext_match else "jpg"
         filename = f"img_{i}.{ext}"
@@ -139,7 +172,7 @@ async def download_dynamic(
     返回 True/False 表示成功/失败。
     """
     dynamic_id = item.content_id
-    raw = item.extra.get("raw", {})
+    raw = item.extra.get("raw", {}) if item.extra else {}
     dir_name = sanitize_filename(dynamic_id)
     output_dir = base_dir / "dynamics" / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -154,7 +187,7 @@ async def download_dynamic(
             await _download_images_from_item(raw, output_dir, credential, retries=retries)
 
         if type_str == "DYNAMIC_TYPE_FORWARD":
-            orig = raw.get("orig", {})
+            orig = raw.get("orig")
             if isinstance(orig, dict) and orig:
                 orig_type = _get_dynamic_type_str(orig)
                 if orig_type in ("DYNAMIC_TYPE_DRAW", "DYNAMIC_TYPE_AV"):
@@ -171,5 +204,7 @@ async def download_dynamic(
 
     except Exception as e:
         console.print(f"[red]动态 {dynamic_id} 处理失败: {e}[/red]")
+        import traceback
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
         await store.mark("dynamic", dynamic_id, "failed", str(output_dir))
         return False

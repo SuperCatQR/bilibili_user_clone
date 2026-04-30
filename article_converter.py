@@ -13,10 +13,7 @@ from bs4 import BeautifulSoup, NavigableString, Tag
 from downloader import download_file
 from bilibili_api import Credential
 
-_retries = 3
-
-
-async def _process_element(el: Tag | NavigableString, output_dir: Path, credential: Credential, image_idx: list) -> str:
+async def _process_element(el: Tag | NavigableString, output_dir: Path, credential: Credential, image_idx: list, retries: int = 3) -> str:
     """
     递归处理单个 HTML 元素，转换为 Markdown 文本。
     
@@ -41,15 +38,15 @@ async def _process_element(el: Tag | NavigableString, output_dir: Path, credenti
 
     if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
         level = int(tag[1])
-        inner = await _process_children(el, output_dir, credential, image_idx)
+        inner = await _process_children(el, output_dir, credential, image_idx, retries)
         return f"\n\n{'#' * level} {inner.strip()}\n\n"
 
     if tag == "p":
-        inner = await _process_children(el, output_dir, credential, image_idx)
+        inner = await _process_children(el, output_dir, credential, image_idx, retries)
         return f"\n\n{inner.strip()}\n\n"
 
     if tag == "blockquote":
-        inner = await _process_children(el, output_dir, credential, image_idx)
+        inner = await _process_children(el, output_dir, credential, image_idx, retries)
         lines = inner.strip().split("\n")
         return "\n\n" + "\n".join(f"> {line}" for line in lines) + "\n\n"
 
@@ -78,7 +75,7 @@ async def _process_element(el: Tag | NavigableString, output_dir: Path, credenti
             ext = ext_match.group(1) if ext_match else "jpg"
             filename = f"img_{image_idx[0]}.{ext}"
             local_path = image_dir / filename
-            ok = await download_file(src, local_path, credential, retries=_retries)
+            ok = await download_file(src, local_path, credential, retries=retries)
             if ok:
                 return f"\n\n![{alt}](images/{filename})\n\n"
             else:
@@ -87,28 +84,28 @@ async def _process_element(el: Tag | NavigableString, output_dir: Path, credenti
 
     if tag == "a":
         href = el.get("href", "")
-        inner = await _process_children(el, output_dir, credential, image_idx)
+        inner = await _process_children(el, output_dir, credential, image_idx, retries)
         return f"[{inner.strip()}]({href})"
 
     if tag == "strong" or tag == "b":
-        inner = await _process_children(el, output_dir, credential, image_idx)
+        inner = await _process_children(el, output_dir, credential, image_idx, retries)
         return f"**{inner.strip()}**"
 
     if tag == "em" or tag == "i":
-        inner = await _process_children(el, output_dir, credential, image_idx)
+        inner = await _process_children(el, output_dir, credential, image_idx, retries)
         return f"*{inner.strip()}*"
 
     if tag == "ul":
         items = []
         for li in el.find_all("li", recursive=False):
-            inner = await _process_children(li, output_dir, credential, image_idx)
+            inner = await _process_children(li, output_dir, credential, image_idx, retries)
             items.append(f"- {inner.strip()}")
         return "\n\n" + "\n".join(items) + "\n\n"
 
     if tag == "ol":
         items = []
         for i, li in enumerate(el.find_all("li", recursive=False), 1):
-            inner = await _process_children(li, output_dir, credential, image_idx)
+            inner = await _process_children(li, output_dir, credential, image_idx, retries)
             items.append(f"{i}. {inner.strip()}")
         return "\n\n" + "\n".join(items) + "\n\n"
 
@@ -116,23 +113,23 @@ async def _process_element(el: Tag | NavigableString, output_dir: Path, credenti
         return "\n"
 
     if tag == "figure":
-        return await _process_children(el, output_dir, credential, image_idx)
+        return await _process_children(el, output_dir, credential, image_idx, retries)
 
     if tag == "figcaption":
-        inner = await _process_children(el, output_dir, credential, image_idx)
+        inner = await _process_children(el, output_dir, credential, image_idx, retries)
         return f"\n*{inner.strip()}*\n"
 
     if tag in ("span", "div", "section", "article", "main", "header", "footer", "nav"):
-        return await _process_children(el, output_dir, credential, image_idx)
+        return await _process_children(el, output_dir, credential, image_idx, retries)
 
-    return await _process_children(el, output_dir, credential, image_idx)
+    return await _process_children(el, output_dir, credential, image_idx, retries)
 
 
-async def _process_children(el: Tag, output_dir: Path, credential: Credential, image_idx: list) -> str:
+async def _process_children(el: Tag, output_dir: Path, credential: Credential, image_idx: list, retries: int = 3) -> str:
     """递归处理元素的所有子节点，拼接返回。"""
     result = []
     for child in el.children:
-        result.append(await _process_element(child, output_dir, credential, image_idx))
+        result.append(await _process_element(child, output_dir, credential, image_idx, retries))
     return "".join(result)
 
 
@@ -143,11 +140,9 @@ async def html_to_markdown(html: str, output_dir: Path, credential: Credential, 
     自动定位正文根节点（.article-content / article / body），
     处理完成后合并多余空行。
     """
-    global _retries
-    _retries = retries
     soup = BeautifulSoup(html, "lxml")
     root = soup.find("div", class_="article-content") or soup.find("article") or soup.body or soup
     image_idx = [0]
-    md = await _process_children(root, output_dir, credential, image_idx)
+    md = await _process_children(root, output_dir, credential, image_idx, retries)
     md = re.sub(r"\n{3,}", "\n\n", md)
     return md.strip()

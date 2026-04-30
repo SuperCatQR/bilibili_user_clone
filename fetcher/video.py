@@ -27,12 +27,18 @@ from config import DEFAULT_RETRY
 console = Console()
 
 
-async def _download_subtitle(v: video.Video, cid: int, output_dir: Path) -> bool:
+async def _download_subtitle(v: video.Video, cid: int, output_dir: Path, credential: Credential = None) -> bool:
     """
     下载视频字幕并保存为SRT格式。
     
     字幕语言优先级：中文（lan以zh开头）> 第一个可用字幕。
     无字幕时返回 False。
+    
+    Args:
+        v: Video对象
+        cid: 分P的CID
+        output_dir: 输出目录
+        credential: 认证凭据（用于携带Cookie/Referer头）
     """
     try:
         subtitle_info = await v.get_subtitle(cid=cid)
@@ -56,8 +62,12 @@ async def _download_subtitle(v: video.Video, cid: int, output_dir: Path) -> bool
         if sub_url.startswith("//"):
             sub_url = "https:" + sub_url
 
+        # 使用downloader模块的_build_headers构建认证头
+        from downloader import _build_headers
+        headers = _build_headers(credential) if credential else {}
+        
         import aiohttp
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(sub_url) as resp:
                 if resp.status != 200:
                     return False
@@ -103,6 +113,7 @@ async def download_video(
     """
     下载单个视频，根据 video_mode 决定下载内容。
     
+    支持多分P视频：遍历所有分P并下载。
     返回 True 表示成功（包括 none 模式和 subtitle-only 无字幕标记为 skipped），
     返回 False 表示失败（下次运行会重试）。
     """
@@ -123,21 +134,86 @@ async def download_video(
             await store.mark("video", bvid, "skipped", str(output_dir))
             return True
 
-        if video_mode == "subtitle-only":
-            cid = info.get("pages", [{}])[0].get("cid", 0) if info.get("pages") else 0
-            if not cid:
-                console.print("[yellow]无法获取CID[/yellow]")
-                await store.mark("video", bvid, "skipped", str(output_dir))
-                return True
-            ok = await _download_subtitle(v, cid, output_dir)
-            await store.mark("video", bvid, "done" if ok else "skipped", str(output_dir))
-            return True
-
-        cid = info.get("pages", [{}])[0].get("cid", 0) if info.get("pages") else 0
-        if not cid:
-            console.print("[red]无法获取CID，跳过下载[/red]")
+        # 获取所有分P的CID列表
+        pages = info.get("pages", [])
+        if not pages:
+            console.print("[red]无法获取分P信息，跳过下载[/red]")
             await store.mark("video", bvid, "failed", str(output_dir))
             return False
+
+        # 如果只有一个分P，直接下载
+        if len(pages) == 1:
+            cid = pages[0].get("cid", 0)
+            if not cid:
+                console.print("[red]无法获取CID，跳过下载[/red]")
+                await store.mark("video", bvid, "failed", str(output_dir))
+                return False
+            return await _download_single_part(v, cid, output_dir, video_mode, retries, store, bvid, credential)
+        
+        # 多分P视频：遍历所有分P
+        console.print(f"[cyan]视频有 {len(pages)} 个分P[/cyan]")
+        all_success = True
+        for i, page in enumerate(pages, 1):
+            cid = page.get("cid", 0)
+            part_title = page.get("part", f"第{i}P")
+            if not cid:
+                console.print(f"[yellow]分P {i} 无法获取CID，跳过[/yellow]")
+                continue
+            
+            # 为每个分P创建子目录
+            part_dir = output_dir / sanitize_filename(f"P{i} - {part_title}")
+            part_dir.mkdir(parents=True, exist_ok=True)
+            
+            console.print(f"[cyan]下载分P {i}/{len(pages)}: {part_title}[/cyan]")
+            success = await _download_single_part(v, cid, part_dir, video_mode, retries, store, f"{bvid}_P{i}", credential)
+            if not success:
+                all_success = False
+        
+        # 标记整体状态
+        if all_success:
+            await store.mark("video", bvid, "done", str(output_dir))
+        else:
+            await store.mark("video", bvid, "failed", str(output_dir))
+        return all_success
+
+    except Exception as e:
+        console.print(f"[red]视频 {bvid} 处理失败: {e}[/red]")
+        await store.mark("video", bvid, "failed", str(output_dir))
+        return False
+
+
+async def _download_single_part(
+    v: video.Video,
+    cid: int,
+    output_dir: Path,
+    video_mode: str,
+    retries: int,
+    store: DownloadStore,
+    content_id: str,
+    credential: Credential,
+) -> bool:
+    """
+    下载单个分P的视频内容。
+    
+    Args:
+        v: Video对象
+        cid: 分P的CID
+        output_dir: 输出目录
+        video_mode: 下载模式
+        retries: 重试次数
+        store: 存储对象
+        content_id: 内容ID（用于标记状态）
+        credential: 认证凭据
+    
+    Returns:
+        True表示成功，False表示失败
+    """
+    try:
+        if video_mode == "subtitle-only":
+            ok = await _download_subtitle(v, cid, output_dir, credential)
+            await store.mark("video", content_id, "done" if ok else "skipped", str(output_dir))
+            return True
+
         download_data = await v.get_download_url(cid=cid)
         detecter = VideoDownloadURLDataDetecter(download_data)
 
@@ -150,7 +226,7 @@ async def download_video(
                     break
             if not audio_stream:
                 console.print("[red]未找到音频流[/red]")
-                await store.mark("video", bvid, "failed", str(output_dir))
+                await store.mark("video", content_id, "failed", str(output_dir))
                 return False
             temp_path = output_dir / "audio_temp.m4a"
             ok = await download_file(audio_stream.url, temp_path, credential, retries=retries)
@@ -165,15 +241,15 @@ async def download_video(
                         .run(quiet=True)
                     )
                     temp_path.unlink(missing_ok=True)
-                except ffmpeg.Error as e:
+                except (ffmpeg.Error, FileNotFoundError) as e:
                     console.print(f"[red]音频转WAV失败: {e}[/red]")
                     temp_path.unlink(missing_ok=True)
-                    await store.mark("video", bvid, "failed", str(output_dir))
+                    await store.mark("video", content_id, "failed", str(output_dir))
                     return False
-                await store.mark("video", bvid, "done", str(output_dir))
+                await store.mark("video", content_id, "done", str(output_dir))
             else:
                 temp_path.unlink(missing_ok=True)
-                await store.mark("video", bvid, "failed", str(output_dir))
+                await store.mark("video", content_id, "failed", str(output_dir))
             return ok
 
         if video_mode == "video-only":
@@ -185,15 +261,16 @@ async def download_video(
                     break
             if not video_stream:
                 console.print("[red]未找到视频流[/red]")
-                await store.mark("video", bvid, "failed", str(output_dir))
+                await store.mark("video", content_id, "failed", str(output_dir))
                 return False
             ok = await download_file(video_stream.url, output_dir / "video.m4v", credential, retries=retries)
             if ok:
-                await store.mark("video", bvid, "done", str(output_dir))
+                await store.mark("video", content_id, "done", str(output_dir))
             else:
-                await store.mark("video", bvid, "failed", str(output_dir))
+                await store.mark("video", content_id, "failed", str(output_dir))
             return ok
 
+        # full模式：下载视频流和音频流并合并
         streams = detecter.detect_best_streams()
         video_stream = None
         audio_stream = None
@@ -205,7 +282,7 @@ async def download_video(
 
         if not video_stream and not audio_stream:
             console.print("[red]未找到音视频流[/red]")
-            await store.mark("video", bvid, "failed", str(output_dir))
+            await store.mark("video", content_id, "failed", str(output_dir))
             return False
 
         video_ok = None
@@ -220,7 +297,7 @@ async def download_video(
             console.print("[red]音视频下载不完整[/red]")
             (output_dir / "video_temp.m4v").unlink(missing_ok=True)
             (output_dir / "audio_temp.m4a").unlink(missing_ok=True)
-            await store.mark("video", bvid, "failed", str(output_dir))
+            await store.mark("video", content_id, "failed", str(output_dir))
             return False
 
         import ffmpeg
@@ -258,15 +335,15 @@ async def download_video(
                     .run(quiet=True)
                 )
                 a_temp.unlink(missing_ok=True)
-        except ffmpeg.Error as e:
+        except (ffmpeg.Error, FileNotFoundError) as e:
             console.print(f"[red]ffmpeg 处理失败: {e}[/red]")
-            await store.mark("video", bvid, "failed", str(output_dir))
+            await store.mark("video", content_id, "failed", str(output_dir))
             return False
 
-        await store.mark("video", bvid, "done", str(output_dir))
+        await store.mark("video", content_id, "done", str(output_dir))
         return True
 
     except Exception as e:
-        console.print(f"[red]视频 {bvid} 处理失败: {e}[/red]")
-        await store.mark("video", bvid, "failed", str(output_dir))
+        console.print(f"[red]视频 {content_id} 处理失败: {e}[/red]")
+        await store.mark("video", content_id, "failed", str(output_dir))
         return False

@@ -99,6 +99,11 @@ uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 - **SQLite 断点续传**：每项下载完成后记录状态（`done`/`failed`/`skipped`），中断后重新运行自动跳过已完成项
 - **时间过滤提前终止**：`--hours` 参数在枚举阶段生效，遇到整页内容都早于截止时间时直接终止分页，不会遍历全部历史
 - **凭证复用**：凭据保存在 `~/.bilibili-cli/credential.json`，支持多项目共享
+- **多分P视频支持**：自动检测并下载多分P视频的全部分P，每个分P创建独立子目录
+- **枚举缓存过期**：枚举结果缓存默认24小时过期，避免重复调用API，可通过环境变量配置
+- **共享Session复用**：使用共享的aiohttp.ClientSession复用TCP连接，提高下载效率
+- **批量提交优化**：SQLite操作支持批量提交，每100次操作自动提交一次，提高性能
+- **安全性增强**：凭据文件和目录设置权限（Unix系统），仅所有者可访问
 
 ## 模块说明
 
@@ -106,14 +111,14 @@ uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 |------|------|
 | `main.py` | CLI 入口，Click 命令定义，编排完整的枚举->下载流水线，输出下载报告 |
 | `config.py` | 全局常量：请求间隔、重试策略、文件名长度、凭证路径、数据库路径、合法类型/模式 |
-| `auth.py` | 三级认证：已保存凭据 -> QR 码登录；凭据 7 天过期自动重新登录；自动补充 buvid3/buvid4 |
-| `store.py` | `DownloadStore` 类，SQLite 断点续传：`is_done()` 查询、`mark()` 记录状态，主键 `(uid, content_type, content_id)` |
-| `downloader.py` | 异步文件下载器，自动补全 `//` 前缀 URL，携带 Cookie/Referer，412 指数退避 |
+| `auth.py` | 两级认证：已保存凭据 -> QR 码登录；凭据 7 天过期自动重新登录；自动补充 buvid3/buvid4；Unix系统上设置文件权限 |
+| `store.py` | `DownloadStore` 类，SQLite 断点续传：`is_done()` 查询、`mark()` 记录状态，支持批量提交优化，枚举缓存支持过期机制 |
+| `downloader.py` | 异步文件下载器，自动补全 `//` 前缀 URL，携带 Cookie/Referer，412 指数退避，支持共享Session复用TCP连接 |
 | `utils.py` | `sanitize_filename()`：去除非法字符、压缩空白、截断超长文件名 |
-| `article_converter.py` | HTML -> Markdown 异步转换器，递归处理标题/段落/代码块/列表/图片等元素，图片下载到本地 `images/` 目录 |
-| `fetcher/enumerator.py` | 四个枚举函数，分页遍历 API 返回 `DownloadItem` 列表，支持 `--hours` 时间过滤和 `_retry_api()` 重试 |
-| `fetcher/video.py` | 视频下载，5 种模式：full（ffmpeg 合流）、video-only、audio-only、subtitle-only（SRT 格式）、none |
-| `fetcher/audio.py` | 音频下载，从 `get_download_url()` 响应中提取 CDN 地址 |
+| `article_converter.py` | HTML -> Markdown 异步转换器，递归处理标题/段落/代码块/列表/图片等元素，图片下载到本地 `images/` 目录，重试参数显式传递避免全局变量污染 |
+| `fetcher/enumerator.py` | 四个枚举函数，分页遍历 API 返回 `DownloadItem` 列表，支持 `--hours` 时间过滤和 `_retry_api()` 重试（记录完整traceback），使用通用缓存加载函数减少重复代码 |
+| `fetcher/video.py` | 视频下载，5 种模式：full（ffmpeg 合流）、video-only、audio-only、subtitle-only（SRT 格式，携带认证头）、none；支持多分P视频下载，每个分P创建独立子目录 |
+| `fetcher/audio.py` | 音频下载，从 `get_download_url()` 响应中提取 CDN 地址，ffmpeg异常处理包含FileNotFoundError |
 | `fetcher/article.py` | 专栏下载，调用 `get_detail()` 获取内容，经 `article_converter` 转为 Markdown |
 | `fetcher/dynamic.py` | 动态下载，保存原始 JSON + 提取图片 + 识别嵌入式内容（关联视频/专栏/音频的 ID） |
 
@@ -223,6 +228,26 @@ output/<UID>/
 | `audio-only` | `info.json` + `audio.wav` | 仅音频轨，转WAV |
 | `subtitle-only` | `info.json` + `subtitles.srt` | 仅字幕（中文优先，无中文取首个） |
 | `none` | `info.json` | 仅元数据 |
+
+#### 多分P视频支持
+
+对于包含多个分P的视频，程序会自动检测并下载所有分P：
+
+```
+videos/<BV号> - <标题>/
+├── info.json                    # 视频整体元数据
+├── P1 - 第一P标题/
+│   ├── video.mp4               # 第一P视频文件（根据video-mode）
+│   └── ...
+├── P2 - 第二P标题/
+│   ├── video.mp4               # 第二P视频文件
+│   └── ...
+└── ...
+```
+
+- 每个分P创建独立子目录，命名为 `P<序号> - <分P标题>`
+- 每个分P目录内包含该分P的媒体文件
+- 整体状态标记：所有分P成功才标记为 `done`，任一分P失败标记为 `failed`
 
 #### `info.json` -- 视频元数据
 
@@ -577,3 +602,11 @@ output/<UID>/
 - **凭证路径**：`~/.bilibili-cli/credential.json`
 - **有效期**：7 天（`CREDENTIAL_TTL_DAYS`），过期后自动触发 QR 码重新登录
 - **存储字段**：`sessdata`、`bili_jct`、`buvid3`、`buvid4`、`dedeuserid`、`ac_time_value`、`saved_at`
+- **安全性**：Unix系统上，凭据文件权限为600（仅所有者可读写），目录权限为700（仅所有者可访问）
+
+## 环境变量配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `BILIBILI_CLONE_DB_DIR` | `.bilibili-clone` | SQLite数据库目录路径 |
+| `BILIBILI_CLONE_CACHE_TTL_HOURS` | `24` | 枚举缓存过期时间（小时） |

@@ -74,7 +74,7 @@ async def download_audio(
                     .run(quiet=True)
                 )
                 temp_path.unlink(missing_ok=True)
-            except ffmpeg.Error as e:
+            except (ffmpeg.Error, FileNotFoundError) as e:
                 console.print(f"[red]音频转WAV失败: {e}[/red]")
                 temp_path.unlink(missing_ok=True)
                 await store.mark("audio", str(auid), "failed", str(output_dir))

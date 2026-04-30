@@ -17,6 +17,7 @@ from rich.table import Table
 from config import VALID_TYPES, VIDEO_MODES, DEFAULT_INTERVAL, DEFAULT_RETRY, BATCH_SIZE, BATCH_PAUSE_STEPS
 from auth import ensure_credential
 from store import DownloadStore
+from downloader import close_shared_session
 from fetcher.enumerator import (
     DownloadItem,
     enumerate_videos,
@@ -152,6 +153,7 @@ async def run_clone(uid: int, output: str, types: str, video_mode: str, interval
 
     finally:
         await store.close()
+        await close_shared_session()
 
 
 @click.group()

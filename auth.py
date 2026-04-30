@@ -56,7 +56,16 @@ def _load_saved_credential() -> Credential | None:
 
 def _save_credential(cred: Credential):
     """将凭据序列化写入本地文件，同时记录保存时间戳。"""
+    # 创建目录并设置权限（仅所有者可读写执行）
     CREDENTIAL_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        # Unix系统上设置目录权限为700（仅所有者可访问）
+        import stat
+        CREDENTIAL_DIR.chmod(stat.S_IRWXU)  # 0o700
+    except (OSError, AttributeError):
+        # Windows系统或权限设置失败时跳过
+        pass
+    
     data = {
         "sessdata": cred.sessdata or "",
         "bili_jct": cred.bili_jct or "",
@@ -67,6 +76,13 @@ def _save_credential(cred: Credential):
         "saved_at": time.time(),
     }
     CREDENTIAL_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    
+    # 设置文件权限为600（仅所有者可读写）
+    try:
+        CREDENTIAL_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0o600
+    except (OSError, AttributeError):
+        # Windows系统或权限设置失败时跳过
+        pass
 
 
 def _print_small_qr(url: str):

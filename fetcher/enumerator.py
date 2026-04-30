@@ -8,6 +8,7 @@
 
 import asyncio
 import time
+import traceback
 from dataclasses import dataclass
 
 from bilibili_api import user, Credential
@@ -17,6 +18,32 @@ from config import DEFAULT_INTERVAL, DEFAULT_RETRY, BACKOFF_BASE
 from store import DownloadStore
 
 console = Console()
+
+
+async def _load_cached_items(content_type: str, store: DownloadStore) -> list[DownloadItem] | None:
+    """
+    从缓存加载指定类型的下载项，过滤掉已完成的项。
+    
+    Args:
+        content_type: 内容类型（video/audio/article/dynamic）
+        store: 存储对象
+    
+    Returns:
+        未完成的DownloadItem列表，如果无缓存返回None
+    """
+    cached = await store.load_enum_cache(content_type)
+    if cached is None:
+        return None
+    
+    result = []
+    for d in cached:
+        if not await store.is_done(content_type, d["content_id"]):
+            result.append(DownloadItem(
+                content_type=d["content_type"], content_id=d["content_id"],
+                title=d["title"], extra=d["extra"],
+            ))
+    console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
+    return result
 
 
 @dataclass
@@ -41,9 +68,15 @@ async def _retry_api(fn, retries=DEFAULT_RETRY):
         except Exception as e:
             if attempt < retries - 1:
                 wait = min(BACKOFF_BASE * (2 ** attempt), 60)
-                console.print(f"[yellow]API请求失败: {e}, {wait}s后重试...[/yellow]")
+                # 记录完整的异常堆栈便于调试
+                console.print(f"[yellow]API请求失败: {e}[/yellow]")
+                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                console.print(f"[yellow]{wait}s后重试...[/yellow]")
                 await asyncio.sleep(wait)
             else:
+                # 最后一次重试失败，记录完整堆栈并抛出异常
+                console.print(f"[red]API请求最终失败: {e}[/red]")
+                console.print(f"[dim]{traceback.format_exc()}[/dim]")
                 raise
 
 
@@ -56,17 +89,9 @@ async def enumerate_videos(uid: int, credential: Credential, store: DownloadStor
     无 --hours 时使用枚举缓存，避免重复翻页。
     """
     if hours is None:
-        cached = await store.load_enum_cache("video")
-        if cached is not None:
-            result = []
-            for d in cached:
-                if not await store.is_done("video", d["content_id"]):
-                    result.append(DownloadItem(
-                        content_type=d["content_type"], content_id=d["content_id"],
-                        title=d["title"], extra=d["extra"],
-                    ))
-            console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
-            return result
+        cached_items = await _load_cached_items("video", store)
+        if cached_items is not None:
+            return cached_items
 
     items = []
     cutoff = _cutoff(hours)
@@ -114,17 +139,9 @@ async def enumerate_audios(uid: int, credential: Credential, store: DownloadStor
     无 --hours 时使用枚举缓存。
     """
     if hours is None:
-        cached = await store.load_enum_cache("audio")
-        if cached is not None:
-            result = []
-            for d in cached:
-                if not await store.is_done("audio", d["content_id"]):
-                    result.append(DownloadItem(
-                        content_type=d["content_type"], content_id=d["content_id"],
-                        title=d["title"], extra=d["extra"],
-                    ))
-            console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
-            return result
+        cached_items = await _load_cached_items("audio", store)
+        if cached_items is not None:
+            return cached_items
 
     items = []
     cutoff = _cutoff(hours)
@@ -175,17 +192,9 @@ async def enumerate_audios(uid: int, credential: Credential, store: DownloadStor
 async def enumerate_articles(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None, retries: int = DEFAULT_RETRY) -> list[DownloadItem]:
     """枚举用户专栏列表，使用 get_articles API 的 articles 字段。无 --hours 时使用枚举缓存。"""
     if hours is None:
-        cached = await store.load_enum_cache("article")
-        if cached is not None:
-            result = []
-            for d in cached:
-                if not await store.is_done("article", d["content_id"]):
-                    result.append(DownloadItem(
-                        content_type=d["content_type"], content_id=d["content_id"],
-                        title=d["title"], extra=d["extra"],
-                    ))
-            console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
-            return result
+        cached_items = await _load_cached_items("article", store)
+        if cached_items is not None:
+            return cached_items
 
     items = []
     cutoff = _cutoff(hours)
@@ -234,17 +243,9 @@ async def enumerate_dynamics(uid: int, credential: Credential, store: DownloadSt
     无 --hours 时使用枚举缓存。
     """
     if hours is None:
-        cached = await store.load_enum_cache("dynamic")
-        if cached is not None:
-            result = []
-            for d in cached:
-                if not await store.is_done("dynamic", d["content_id"]):
-                    result.append(DownloadItem(
-                        content_type=d["content_type"], content_id=d["content_id"],
-                        title=d["title"], extra=d["extra"],
-                    ))
-            console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
-            return result
+        cached_items = await _load_cached_items("dynamic", store)
+        if cached_items is not None:
+            return cached_items
 
     items = []
     cutoff = _cutoff(hours)

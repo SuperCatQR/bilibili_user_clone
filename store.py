@@ -5,20 +5,35 @@
 主键为 (uid, content_type, content_id)，status 为 done/skipped 的项在枚举阶段被跳过，
 status 为 failed 的项会被重新尝试。
 enum_cache 表缓存枚举结果，重新运行时无需再次翻页调API。
+缓存默认24小时过期，可通过环境变量 BILIBILI_CLONE_CACHE_TTL_HOURS 配置。
 """
 
 import json
+import os
+import time
 import aiosqlite
 from pathlib import Path
 from config import DB_DIR, DB_FILE
 
+# 缓存过期时间（小时），默认24小时
+CACHE_TTL_HOURS = int(os.environ.get("BILIBILI_CLONE_CACHE_TTL_HOURS", "24"))
+
 
 class DownloadStore:
-    """异步 SQLite 下载状态存储，按 uid 隔离。"""
+    """异步 SQLite 下载状态存储，按 uid 隔离。支持批量提交优化性能。"""
 
-    def __init__(self, uid: int):
+    def __init__(self, uid: int, batch_size: int = 100):
+        """
+        初始化存储对象。
+        
+        Args:
+            uid: 用户UID
+            batch_size: 批量提交的大小，每batch_size次操作自动提交一次
+        """
         self.uid = uid
         self._db: aiosqlite.Connection | None = None
+        self._batch_size = batch_size
+        self._pending_operations = 0
 
     async def open(self):
         """打开数据库连接并确保表结构存在。"""
@@ -41,15 +56,31 @@ class DownloadStore:
                 content_type TEXT NOT NULL,
                 items_json TEXT NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at REAL NOT NULL DEFAULT 0,
                 PRIMARY KEY (uid, content_type)
             )"""
         )
+        # 添加created_at列（如果不存在）
+        try:
+            await self._db.execute("ALTER TABLE enum_cache ADD COLUMN created_at REAL NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # 列已存在
         await self._db.commit()
 
     async def close(self):
-        """关闭数据库连接。"""
+        """关闭数据库连接，提交所有未提交的操作。"""
         if self._db:
+            # 提交所有未提交的操作
+            if self._pending_operations > 0:
+                await self._db.commit()
+                self._pending_operations = 0
             await self._db.close()
+
+    async def flush(self):
+        """手动提交所有未提交的操作。"""
+        if self._db and self._pending_operations > 0:
+            await self._db.commit()
+            self._pending_operations = 0
 
     async def is_done(self, content_type: str, content_id: str) -> bool:
         """
@@ -69,6 +100,8 @@ class DownloadStore:
         """
         记录或更新下载状态。INSERT OR REPLACE 保证同一主键只保留最新状态。
         
+        支持批量提交：每_batch_size次操作自动提交一次，提高性能。
+        
         Args:
             status: "done"(成功) / "failed"(失败，下次重试) / "skipped"(跳过，不再重试)
         """
@@ -76,7 +109,12 @@ class DownloadStore:
             "INSERT OR REPLACE INTO downloads (uid, content_type, content_id, status, output_dir) VALUES (?, ?, ?, ?, ?)",
             (self.uid, content_type, content_id, status, output_dir),
         )
-        await self._db.commit()
+        self._pending_operations += 1
+        
+        # 达到批量大小时自动提交
+        if self._pending_operations >= self._batch_size:
+            await self._db.commit()
+            self._pending_operations = 0
 
     async def save_enum_cache(self, content_type: str, items: list):
         """保存枚举结果缓存。items 为 DownloadItem 列表，序列化为 JSON 存储。"""
@@ -86,18 +124,30 @@ class DownloadStore:
             for it in items
         ]
         await self._db.execute(
-            "INSERT OR REPLACE INTO enum_cache (uid, content_type, items_json) VALUES (?, ?, ?)",
-            (self.uid, content_type, json.dumps(data, ensure_ascii=False)),
+            "INSERT OR REPLACE INTO enum_cache (uid, content_type, items_json, created_at) VALUES (?, ?, ?, ?)",
+            (self.uid, content_type, json.dumps(data, ensure_ascii=False), time.time()),
         )
         await self._db.commit()
 
     async def load_enum_cache(self, content_type: str) -> list[dict] | None:
-        """加载枚举缓存，返回 dict 列表或 None（无缓存时）。"""
+        """加载枚举缓存，返回 dict 列表或 None（无缓存或已过期时）。"""
         cursor = await self._db.execute(
-            "SELECT items_json FROM enum_cache WHERE uid=? AND content_type=?",
+            "SELECT items_json, created_at FROM enum_cache WHERE uid=? AND content_type=?",
             (self.uid, content_type),
         )
         row = await cursor.fetchone()
         if row is None:
             return None
-        return json.loads(row[0])
+        
+        items_json, created_at = row
+        # 检查缓存是否过期
+        if created_at and time.time() - created_at > CACHE_TTL_HOURS * 3600:
+            # 缓存已过期，删除并返回None
+            await self._db.execute(
+                "DELETE FROM enum_cache WHERE uid=? AND content_type=?",
+                (self.uid, content_type),
+            )
+            await self._db.commit()
+            return None
+        
+        return json.loads(items_json)
