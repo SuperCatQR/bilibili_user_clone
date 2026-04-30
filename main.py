@@ -29,6 +29,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.progress import Progress
 from rich.table import Table
 
 from config import VALID_TYPES, VIDEO_MODES, DEFAULT_INTERVAL, DEFAULT_RETRY, BATCH_SIZE, BATCH_PAUSE_STEPS
@@ -65,31 +66,42 @@ async def _process_items(items: list[DownloadItem], download_fn, content_type_la
     每项之间等待 interval 秒，每 BATCH_SIZE 项触发阶梯暂停
     （5s→10s→15s→20s 循环），避免触发B站412限速。
     """
+    if not items:
+        return
+
     count = 0
-    for item in items:
-        stats["total"] += 1
-        console.print(f"\n[cyan][{content_type_label}][/] {item.content_id} - {item.title}")
+    with Progress(
+        "[progress.description]{task.description}",
+        "[progress.percentage]{task.percentage:>3.0f}%",
+        "{task.completed}/{task.total}",
+        console=console,
+    ) as progress:
+        task = progress.add_task(f"下载{content_type_label}", total=len(items))
+        for item in items:
+            stats["total"] += 1
+            # 截断标题避免进度条过长
+            short_title = item.title[:30] + ("..." if len(item.title) > 30 else "")
+            progress.update(task, description=f"[cyan]{item.content_id}[/] {short_title}")
 
-        try:
-            ok = await download_fn(item)
-            if ok:
-                stats["done"] += 1
-                console.print(f"[green]  ✓ 完成[/green]")
-            else:
+            try:
+                ok = await download_fn(item)
+                if ok:
+                    stats["done"] += 1
+                else:
+                    stats["failed"] += 1
+            except Exception as e:
                 stats["failed"] += 1
-                console.print(f"[red]  ✗ 失败[/red]")
-        except Exception as e:
-            stats["failed"] += 1
-            console.print(f"[red]  ✗ 异常: {e}[/red]")
 
-        count += 1
-        if count % BATCH_SIZE == 0:
-            tier = min((count // BATCH_SIZE - 1) % len(BATCH_PAUSE_STEPS), len(BATCH_PAUSE_STEPS) - 1)
-            pause = BATCH_PAUSE_STEPS[tier]
-            console.print(f"[dim]已处理 {count} 项，暂停 {pause}s...[/dim]")
-            await asyncio.sleep(pause)
-        else:
-            await asyncio.sleep(interval)
+            progress.advance(task)
+
+            count += 1
+            if count % BATCH_SIZE == 0:
+                tier = min((count // BATCH_SIZE - 1) % len(BATCH_PAUSE_STEPS), len(BATCH_PAUSE_STEPS) - 1)
+                pause = BATCH_PAUSE_STEPS[tier]
+                progress.update(task, description=f"[dim]暂停 {pause}s...[/dim]")
+                await asyncio.sleep(pause)
+            else:
+                await asyncio.sleep(interval)
 
 
 async def save_user_info(uid: int, credential, base_dir: Path):
@@ -173,29 +185,29 @@ async def run_clone(uid: int, output: str, types: str, video_mode: str, interval
 
         if "video" in selected_types:
             label, enum_fn = ENUM_FNS["video"]
-            console.print(f"\n[bold]枚举{label}...[/bold]")
-            items = await enum_fn(uid, credential, store, hours, retries=retry)
+            with console.status(f"[bold green]枚举{label}...[/bold green]"):
+                items = await enum_fn(uid, credential, store, hours, retries=retry)
             console.print(f"  待下载: {len(items)} 个{label}")
             await _process_items(items, lambda item: download_video(item, uid, credential, store, base_dir, video_mode, retries=retry), label, stats, interval)
 
         if "audio" in selected_types:
             label, enum_fn = ENUM_FNS["audio"]
-            console.print(f"\n[bold]枚举{label}...[/bold]")
-            items = await enum_fn(uid, credential, store, hours, retries=retry)
+            with console.status(f"[bold green]枚举{label}...[/bold green]"):
+                items = await enum_fn(uid, credential, store, hours, retries=retry)
             console.print(f"  待下载: {len(items)} 个{label}")
             await _process_items(items, lambda item: download_audio(item, uid, credential, store, base_dir, retries=retry), label, stats, interval)
 
         if "article" in selected_types:
             label, enum_fn = ENUM_FNS["article"]
-            console.print(f"\n[bold]枚举{label}...[/bold]")
-            items = await enum_fn(uid, credential, store, hours, retries=retry)
+            with console.status(f"[bold green]枚举{label}...[/bold green]"):
+                items = await enum_fn(uid, credential, store, hours, retries=retry)
             console.print(f"  待下载: {len(items)} 个{label}")
             await _process_items(items, lambda item: download_article(item, uid, credential, store, base_dir, retries=retry), label, stats, interval)
 
         if "dynamic" in selected_types:
             label, enum_fn = ENUM_FNS["dynamic"]
-            console.print(f"\n[bold]枚举{label}...[/bold]")
-            items = await enum_fn(uid, credential, store, hours, retries=retry)
+            with console.status(f"[bold green]枚举{label}...[/bold green]"):
+                items = await enum_fn(uid, credential, store, hours, retries=retry)
             console.print(f"  待下载: {len(items)} 个{label}")
             await _process_items(items, lambda item: download_dynamic(item, uid, credential, store, base_dir, retries=retry), label, stats, interval)
 
@@ -267,9 +279,9 @@ async def run_update_cache(uid: int, types: str, retry: int):
             if ctype not in selected_types:
                 continue
             label, enum_fn = ENUM_FNS[ctype]
-            console.print(f"\n[bold]更新{label}缓存...[/bold]")
-            await store.clear_enum_cache(ctype)
-            items = await enum_fn(uid, credential, store, retries=retry, force=True)
+            with console.status(f"[bold green]更新{label}缓存...[/bold green]"):
+                await store.clear_enum_cache(ctype)
+                items = await enum_fn(uid, credential, store, retries=retry, force=True)
             await store.save_enum_cache(ctype, items)
             stats[ctype] = len(items)
             console.print(f"  共 {len(items)} 个{label}")

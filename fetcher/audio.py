@@ -62,7 +62,12 @@ async def download_audio(
     Returns:
         True成功，False失败
     """
-    auid = int(item.content_id)
+    try:
+        auid = int(item.content_id)
+    except (ValueError, TypeError):
+        console.print(f"[red]音频 content_id 无效: {item.content_id}[/red]")
+        await store.mark("audio", str(item.content_id), "failed", None)
+        return False
     title = item.title
 
     # 构建输出目录：audios/AU<号> - <标题>/

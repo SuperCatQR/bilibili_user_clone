@@ -53,7 +53,12 @@ async def download_article(
     Returns:
         True成功，False失败
     """
-    cvid = int(item.content_id)
+    try:
+        cvid = int(item.content_id)
+    except (ValueError, TypeError):
+        console.print(f"[red]专栏 content_id 无效: {item.content_id}[/red]")
+        await store.mark("article", str(item.content_id), "failed", None)
+        return False
     title = item.title
 
     # 构建输出目录：articles/cv<号> - <标题>/
