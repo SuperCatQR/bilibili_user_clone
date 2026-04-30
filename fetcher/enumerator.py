@@ -70,9 +70,15 @@ async def _load_cached_items(content_type: str, store: DownloadStore) -> tuple[l
         (未完成的项列表, 所有缓存ID集合, 完整缓存列表)
         如果无缓存返回 (None, set(), [])
     """
-    cached = await store.load_enum_cache(content_type)
+    cached, is_expired, age_hours = await store.load_enum_cache(content_type)
     if cached is None:
         return None, set(), []
+
+    if is_expired:
+        console.print(
+            f"  [yellow]缓存已过期 {age_hours} 小时，"
+            f"建议运行: uv run main.py update-cache {store.uid} --types {content_type}[/yellow]"
+        )
 
     all_ids = {d["content_id"] for d in cached}
 

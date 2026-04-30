@@ -209,46 +209,32 @@ class DownloadStore:
         )
         await self._db.commit()
 
-    async def load_enum_cache(self, content_type: str) -> list[dict] | None:
+    async def load_enum_cache(self, content_type: str) -> tuple[list[dict] | None, bool, int]:
         """
-        加载枚举缓存，返回 dict 列表或 None（无缓存或已过期时）。
-
-        过期判断：
-        - 如果 created_at + CACHE_TTL_HOURS * 3600 < 当前时间，则缓存过期
-        - 过期缓存会被删除并返回None
+        加载枚举缓存。
 
         Args:
             content_type: 内容类型
 
         Returns:
-            缓存的字典列表，或None（无缓存或已过期）
+            (缓存的字典列表, 是否过期, 缓存年龄小时数)
+            无缓存时返回 (None, False, 0)
         """
-        # 查询缓存
         cursor = await self._db.execute(
             "SELECT items_json, created_at FROM enum_cache WHERE uid=? AND content_type=?",
             (self.uid, content_type),
         )
         row = await cursor.fetchone()
 
-        # 无缓存
         if row is None:
-            return None
+            return None, False, 0
 
         items_json, created_at = row
+        age = time.time() - created_at if created_at else 0
+        is_expired = age > CACHE_TTL_HOURS * 3600
+        age_hours = int(age / 3600)
 
-        # 检查缓存是否过期
-        # CACHE_TTL_HOURS * 3600 将小时转换为秒
-        if created_at and time.time() - created_at > CACHE_TTL_HOURS * 3600:
-            # 缓存已过期，删除并返回None
-            await self._db.execute(
-                "DELETE FROM enum_cache WHERE uid=? AND content_type=?",
-                (self.uid, content_type),
-            )
-            await self._db.commit()
-            return None
-
-        # 反序列化JSON并返回
-        return json.loads(items_json)
+        return json.loads(items_json), is_expired, age_hours
 
     async def clear_enum_cache(self, content_type: str | None = None):
         """
