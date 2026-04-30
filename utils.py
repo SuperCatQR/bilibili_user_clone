@@ -27,7 +27,7 @@ def sanitize_filename(name: str) -> str:
        - 避免超过文件系统限制（NTFS/ext4/APFS均为255字符）
     5. 空名回退为 "unnamed"
        - 防止空文件名导致的文件系统错误
-    """"
+    """
     # 步骤1: 替换非法字符为下划线
     # 正则 [\\/:*?"<>|] 匹配所有Windows/Linux非法字符
     name = re.sub(r'[\\/:*?"<>|]', "_", name)
