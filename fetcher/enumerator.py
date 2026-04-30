@@ -572,6 +572,8 @@ async def _incremental_enum_dynamics(u, first_dynamic_items, first_has_more, fir
             dtype = item.get("type", "")
             if not dynamic_id:
                 continue
+            if dtype == "DYNAMIC_TYPE_AV":
+                continue
             if dynamic_id in cached_ids:
                 continue
             page_all_cached = False
@@ -621,6 +623,8 @@ async def _full_enum_dynamics(u, first_dynamic_items, first_has_more, first_offs
             dynamic_id = str(item.get("id_str", ""))
             dtype = item.get("type", "")
             if not dynamic_id:
+                continue
+            if dtype == "DYNAMIC_TYPE_AV":
                 continue
 
             pub_ts = item.get("modules", {}).get("module_author", {}).get("pub_ts", 0)
