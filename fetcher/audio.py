@@ -30,7 +30,7 @@ from rich.console import Console
 
 from downloader import download_file
 from store import DownloadStore
-from utils import sanitize_filename
+from utils import sanitize_filename, check_signature
 from ffmpeg_utils import convert_to_wav
 from config import DEFAULT_RETRY
 
@@ -69,6 +69,11 @@ async def download_audio(
     dir_name = sanitize_filename(f"AU{auid} - {title}")
     output_dir = base_dir / "audios" / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if check_signature(output_dir, "audio.wav"):
+        console.print(f"[yellow]已存在，跳过[/yellow]")
+        await store.mark("audio", str(auid), "done", str(output_dir))
+        return True
 
     # 创建Audio对象
     a = audio.Audio(auid=auid, credential=credential)

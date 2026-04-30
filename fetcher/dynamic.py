@@ -34,7 +34,7 @@ from rich.console import Console
 
 from downloader import download_file
 from store import DownloadStore
-from utils import sanitize_filename
+from utils import sanitize_filename, check_signature
 from config import DEFAULT_RETRY
 
 console = Console()
@@ -260,6 +260,11 @@ async def download_dynamic(
     dir_name = sanitize_filename(dynamic_id)
     output_dir = base_dir / "dynamics" / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if check_signature(output_dir, "dynamic.json"):
+        console.print(f"[yellow]已存在，跳过[/yellow]")
+        await store.mark("dynamic", dynamic_id, "done", str(output_dir))
+        return True
 
     try:
         # 保存完整原始JSON

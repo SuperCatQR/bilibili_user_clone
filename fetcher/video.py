@@ -44,7 +44,7 @@ from rich.console import Console
 
 from downloader import download_file
 from store import DownloadStore
-from utils import sanitize_filename
+from utils import sanitize_filename, check_signature
 from ffmpeg_utils import convert_to_wav
 from config import DEFAULT_RETRY
 
@@ -256,6 +256,19 @@ async def download_video(
     dir_name = sanitize_filename(f"{bvid} - {title}")
     output_dir = base_dir / "videos" / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    sig_map = {
+        "full": ("video.mp4", "audio.wav"),
+        "audio-only": ("audio.wav",),
+        "video-only": ("video.m4v",),
+        "subtitle-only": ("subtitles.srt",),
+        "none": ("info.json",),
+    }
+    sigs = sig_map.get(video_mode, ())
+    if sigs and check_signature(output_dir, *sigs):
+        console.print(f"[yellow]已存在，跳过[/yellow]")
+        await store.mark("video", bvid, "done", str(output_dir))
+        return True
 
     # 创建Video对象
     v = video.Video(bvid=bvid, credential=credential)

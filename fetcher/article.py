@@ -23,7 +23,7 @@ from rich.console import Console
 
 from article_converter import html_to_markdown
 from store import DownloadStore
-from utils import sanitize_filename
+from utils import sanitize_filename, check_signature
 from config import DEFAULT_RETRY
 
 console = Console()
@@ -60,6 +60,11 @@ async def download_article(
     dir_name = sanitize_filename(f"cv{cvid} - {title}")
     output_dir = base_dir / "articles" / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if check_signature(output_dir, "article.md", "info.json"):
+        console.print(f"[yellow]已存在，跳过[/yellow]")
+        await store.mark("article", str(cvid), "done", str(output_dir))
+        return True
 
     # 创建Article对象
     a = article.Article(cvid=cvid, credential=credential)

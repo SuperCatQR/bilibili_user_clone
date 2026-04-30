@@ -6,6 +6,7 @@
 """
 
 import re
+from pathlib import Path
 from config import MAX_FILENAME_LENGTH
 
 
@@ -50,3 +51,22 @@ def sanitize_filename(name: str) -> str:
         name = "unnamed"
 
     return name
+
+
+def check_signature(output_dir: Path, *signatures: str) -> bool:
+    """
+    检查 output_dir 下是否存在任一签名文件。
+
+    签名文件是每种下载模式产出必需文件的集合。
+    任一签名文件存在即视为该内容已下载完成。
+    用 any 而非 all：不同流可用性产出不同文件（如 full 模式下
+    有视频轨产出 video.mp4，仅音频轨产出 audio.wav）。
+
+    Args:
+        output_dir: 输出目录
+        *signatures: 签名文件名列表
+
+    Returns:
+        True 表示至少一个签名文件存在
+    """
+    return any((output_dir / s).exists() for s in signatures)
