@@ -548,6 +548,7 @@ async def _incremental_enum_dynamics(u, first_dynamic_items, first_has_more, fir
             resp = await _retry_api(lambda _off=offset: u.get_dynamics_new(offset=_off), retries=retries)
             dynamic_items = resp.get("items", [])
             has_more = resp.get("has_more", False)
+            offset = resp.get("offset", "")
 
         if not dynamic_items:
             break
@@ -572,8 +573,6 @@ async def _incremental_enum_dynamics(u, first_dynamic_items, first_has_more, fir
 
         if page_all_cached:
             break
-
-        offset = resp.get("offset", "")
         if not offset or not has_more:
             break
 
@@ -599,6 +598,7 @@ async def _full_enum_dynamics(u, first_dynamic_items, first_has_more, first_offs
             resp = await _retry_api(lambda _off=offset: u.get_dynamics_new(offset=_off), retries=retries)
             dynamic_items = resp.get("items", [])
             has_more = resp.get("has_more", False)
+            offset = resp.get("offset", "")
 
         if not dynamic_items:
             break
@@ -631,8 +631,6 @@ async def _full_enum_dynamics(u, first_dynamic_items, first_has_more, first_offs
 
         if cutoff and page_all_old:
             break
-
-        offset = resp.get("offset", "")
         if not offset or not has_more:
             break
 
