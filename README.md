@@ -117,7 +117,8 @@ bilibili_user_clone/
 ├── auth.py                  # 认证模块：已保存凭据→QR码登录；凭据7天过期自动重新登录
 ├── store.py                 # DownloadStore类：SQLite断点续传，批量提交优化，枚举缓存过期机制
 ├── downloader.py            # 异步文件下载器：412指数退避，共享Session复用，Range分段下载
-├── utils.py                 # 工具函数：sanitize_filename()清理文件名
+├── ffmpeg_utils.py          # ffmpeg工具函数：m4a→WAV转码封装，消除video/audio重复调用
+├── utils.py                 # 工具函数：sanitize_filename()清理文件名，check_signature()签名文件检查
 ├── article_converter.py     # HTML→Markdown转换器：递归处理标签，图片下载到本地
 ├── fetcher/
 │   ├── __init__.py          # 包初始化文件
@@ -154,6 +155,7 @@ bilibili_user_clone/
 - **枚举缓存过期**：枚举结果缓存默认24小时过期，避免重复调用API，可通过环境变量配置
 - **共享Session复用**：使用共享的aiohttp.ClientSession复用TCP连接，提高下载效率
 - **Range分段下载回退**：某些CDN节点会中途切断长连接大文件传输，下载失败时自动回退到 HTTP Range 分段下载（1MB/段），确保文件完整性
+- **签名文件检查**：每个下载函数入口检查对应模式的签名文件（如 `video.mp4`、`audio.wav`），已有文件自动跳过并标记完成，避免删库重建或换机器后重复下载
 - **批量提交优化**：SQLite操作支持批量提交，每100次操作自动提交一次，提高性能
 - **安全性增强**：凭据文件和目录设置权限（Unix系统），仅所有者可访问
 
@@ -190,7 +192,8 @@ B站API有严格的频率限制，本项目采用多层限速策略：
 | `auth.py` | 两级认证：已保存凭据 -> QR 码登录；凭据 7 天过期自动重新登录；自动补充 buvid3/buvid4；Unix系统上设置文件权限 |
 | `store.py` | `DownloadStore` 类，SQLite 断点续传：`is_done()` 查询、`mark()` 记录状态，支持批量提交优化，枚举缓存支持过期机制 |
 | `downloader.py` | 异步文件下载器，自动补全 `//` 前缀 URL，携带 Cookie/Referer，412 指数退避，支持共享Session复用TCP连接，Range分段下载回退 |
-| `utils.py` | `sanitize_filename()`：去除非法字符、压缩空白、截断超长文件名 |
+| `ffmpeg_utils.py` | `convert_to_wav()`：ffmpeg m4a→PCM WAV 转码封装（PCM 16bit 16kHz 单声道），供 video.py 和 audio.py 共用 |
+| `utils.py` | `sanitize_filename()`：去除非法字符、压缩空白、截断超长文件名；`check_signature()`：检查输出目录下签名文件存在性，避免重复下载 |
 | `article_converter.py` | HTML -> Markdown 异步转换器，递归处理标题/段落/代码块/列表/图片等元素，图片下载到本地 `images/` 目录，重试参数显式传递避免全局变量污染 |
 | `fetcher/enumerator.py` | 四个枚举函数，分页遍历 API 返回 `DownloadItem` 列表，支持 `--hours` 时间过滤和 `_retry_api()` 重试（记录完整traceback），使用通用缓存加载函数减少重复代码 |
 | `fetcher/video.py` | 视频下载，5 种模式：full（ffmpeg 合流）、video-only、audio-only、subtitle-only（SRT 格式，携带认证头）、none；支持多分P视频下载，每个分P创建独立子目录 |
@@ -679,7 +682,9 @@ videos/<BV号> - <标题>/
 
 ## 断点续传
 
-下载记录保存在 SQLite 数据库中，中断后重新运行会自动跳过已完成的内容。
+下载记录保存在 SQLite 数据库中，中断后重新运行会自动跳过已完成的内容。去重采用双层机制：
+
+### 第一层：数据库去重（枚举阶段）
 
 - **数据库路径**：`.bilibili-clone/downloads.db`（可通过环境变量 `BILIBILI_CLONE_DB_DIR` 修改）
 - **表结构**：`downloads` 表记录下载状态，`enum_cache` 表记录枚举缓存
@@ -693,6 +698,25 @@ videos/<BV号> - <标题>/
 | `status` | TEXT | 下载状态：`done`(成功)/`failed`(失败)/`skipped`(跳过) |
 | `output_dir` | TEXT | 输出目录路径 |
 | `created_at` | TIMESTAMP | 记录创建时间 |
+
+### 第二层：签名文件检查（下载阶段）
+
+每个下载函数入口检查该模式下必需的签名文件是否已存在于输出目录。存在则跳过并标记 `done`。这覆盖了数据库记录丢失但文件已存在的场景（如删库重建、换机器拷贝 output 目录）。
+
+签名文件定义：
+
+| 内容类型 | 模式 | 签名文件 | 说明 |
+|----------|------|----------|------|
+| video | `full` | `video.mp4` 或 `audio.wav` | 有视频轨→video.mp4；仅音频轨→audio.wav |
+| video | `audio-only` | `audio.wav` | |
+| video | `video-only` | `video.m4v` | |
+| video | `subtitle-only` | `subtitles.srt` | 无字幕时无此文件，标记 skipped |
+| video | `none` | `info.json` | 仅元数据 |
+| audio | - | `audio.wav` | |
+| article | - | `article.md` 或 `info.json` | 无正文时只有 info.json |
+| dynamic | - | `dynamic.json` | |
+
+> `full` 模式使用 `any` 语义（video.mp4 **或** audio.wav），因为部分视频只有视频流或只有音频流，产出文件不同。
 
 ### 判断逻辑
 
