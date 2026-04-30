@@ -23,7 +23,6 @@ CDN地址获取：
 """
 
 import json
-import ffmpeg
 from pathlib import Path
 
 from bilibili_api import audio, Credential
@@ -32,6 +31,7 @@ from rich.console import Console
 from downloader import download_file
 from store import DownloadStore
 from utils import sanitize_filename
+from ffmpeg_utils import convert_to_wav
 from config import DEFAULT_RETRY
 
 console = Console()
@@ -104,26 +104,11 @@ async def download_audio(
         ok = await download_file(cdns[0], temp_path, credential, retries=retries)
 
         if ok:
-            try:
-                # ffmpeg转码为WAV
-                # PCM 16bit 16kHz 单声道：无压缩、标准采样率、单声道
-                # 这种格式适合语音识别和音频分析
-                (
-                    ffmpeg
-                    .input(str(temp_path))
-                    .output(str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=16000, ac=1)
-                    .overwrite_output()
-                    .run(quiet=True)
-                )
-                # 删除临时文件
-                temp_path.unlink(missing_ok=True)
-            except (ffmpeg.Error, FileNotFoundError) as e:
-                # FileNotFoundError: ffmpeg未安装
-                console.print(f"[red]音频转WAV失败: {e}[/red]")
-                temp_path.unlink(missing_ok=True)
+            if convert_to_wav(temp_path, output_dir):
+                await store.mark("audio", str(auid), "done", str(output_dir))
+            else:
                 await store.mark("audio", str(auid), "failed", str(output_dir))
                 return False
-            await store.mark("audio", str(auid), "done", str(output_dir))
         else:
             await store.mark("audio", str(auid), "failed", str(output_dir))
         return ok

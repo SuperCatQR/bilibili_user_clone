@@ -45,9 +45,67 @@ from rich.console import Console
 from downloader import download_file
 from store import DownloadStore
 from utils import sanitize_filename
+from ffmpeg_utils import convert_to_wav
 from config import DEFAULT_RETRY
 
 console = Console()
+
+
+async def _get_streams(v: video.Video, cid: int):
+    """
+    获取下载URL并解析最佳视频流和音频流。
+
+    调用链：
+      v.get_download_url(cid) → B站API返回所有可用流URL
+      VideoDownloadURLDataDetecter(dd) → 解析原始数据为结构化对象
+      detect_best_streams() → 按质量排序，返回最佳流列表
+
+    返回值中的 vs/aus 可能为 None：
+      - 部分老视频只有视频流无独立音频流
+      - 部分音频区视频只有音频流
+    """
+    dd = await v.get_download_url(cid=cid)
+    det = VideoDownloadURLDataDetecter(dd)
+    streams = det.detect_best_streams()
+
+    vs = None
+    aus = None
+    for s in streams:
+        if isinstance(s, VideoStreamDownloadURL) and vs is None:
+            vs = s
+        if isinstance(s, AudioStreamDownloadURL) and aus is None:
+            aus = s
+    return vs, aus
+
+
+async def _download_with_refresh(get_url_fn, path: Path, credential: Credential, retries: int, label: str) -> bool:
+    """
+    带URL刷新重试的下载。
+
+    执行流：
+      第1轮：get_url_fn() → download_file()
+        ↓ 失败
+      等待3秒（URL可能已过期）
+      第2轮：get_url_fn() → download_file()（重新获取URL）
+        ↓ 失败
+      返回 False
+
+    为什么最多2轮而非retries轮：
+      URL有效期约30分钟，如果同一URL重试retries次都失败，
+      说明URL已过期而非网络抖动，必须刷新URL才有意义。
+      2轮=2个不同URL，每轮内download_file自身有retries次重试。
+    """
+    for outer in range(2):
+        url = await get_url_fn()
+        if not url:
+            return False
+        ok = await download_file(url, path, credential, retries=retries)
+        if ok:
+            return True
+        if outer == 0:
+            console.print(f"[yellow]{label} 下载失败，刷新URL重试...[/yellow]")
+            await asyncio.sleep(3)
+    return False
 
 
 async def _download_subtitle(v: video.Video, cid: int, output_dir: Path, credential: Credential = None) -> bool:
@@ -265,6 +323,108 @@ async def download_video(
         return False
 
 
+async def _download_subtitle_only(v: video.Video, cid: int, output_dir: Path, credential: Credential, store: DownloadStore, content_id: str) -> bool:
+    ok = await _download_subtitle(v, cid, output_dir, credential)
+    await store.mark("video", content_id, "done" if ok else "skipped", str(output_dir))
+    return True
+
+
+async def _download_audio_only(v: video.Video, cid: int, output_dir: Path, credential: Credential, store: DownloadStore, content_id: str, retries: int) -> bool:
+    async def _get_audio_url():
+        _, aus = await _get_streams(v, cid)
+        return aus.url if aus else None
+
+    temp_path = output_dir / "audio_temp.m4a"
+    ok = await _download_with_refresh(_get_audio_url, temp_path, credential, retries, "音频")
+
+    if ok:
+        if convert_to_wav(temp_path, output_dir):
+            await store.mark("video", content_id, "done", str(output_dir))
+        else:
+            await store.mark("video", content_id, "failed", str(output_dir))
+            return False
+    else:
+        temp_path.unlink(missing_ok=True)
+        await store.mark("video", content_id, "failed", str(output_dir))
+    return ok
+
+
+async def _download_video_only(v: video.Video, cid: int, output_dir: Path, credential: Credential, store: DownloadStore, content_id: str, retries: int) -> bool:
+    async def _get_video_url():
+        vs, _ = await _get_streams(v, cid)
+        return vs.url if vs else None
+
+    ok = await _download_with_refresh(_get_video_url, output_dir / "video.m4v", credential, retries, "视频")
+    await store.mark("video", content_id, "done" if ok else "failed", str(output_dir))
+    return ok
+
+
+async def _download_full(v: video.Video, cid: int, output_dir: Path, credential: Credential, store: DownloadStore, content_id: str, retries: int) -> bool:
+    vs, aus = await _get_streams(v, cid)
+    if not vs and not aus:
+        console.print("[red]未找到音视频流[/red]")
+        await store.mark("video", content_id, "failed", str(output_dir))
+        return False
+
+    video_ok = None
+    audio_ok = None
+
+    if vs:
+        async def _get_video_url():
+            v2, _ = await _get_streams(v, cid)
+            return v2.url if v2 else None
+        video_ok = await _download_with_refresh(_get_video_url, output_dir / "video_temp.m4v", credential, retries, "视频")
+
+    if aus:
+        async def _get_audio_url():
+            _, a2 = await _get_streams(v, cid)
+            return a2.url if a2 else None
+        audio_ok = await _download_with_refresh(_get_audio_url, output_dir / "audio_temp.m4a", credential, retries, "音频")
+
+    if (vs and not video_ok) or (aus and not audio_ok):
+        console.print("[red]音视频下载不完整[/red]")
+        (output_dir / "video_temp.m4v").unlink(missing_ok=True)
+        (output_dir / "audio_temp.m4a").unlink(missing_ok=True)
+        await store.mark("video", content_id, "failed", str(output_dir))
+        return False
+
+    import ffmpeg
+    try:
+        v_temp = output_dir / "video_temp.m4v"
+        a_temp = output_dir / "audio_temp.m4a"
+        v_final = output_dir / "video.mp4"
+
+        if video_ok and audio_ok:
+            v_input = ffmpeg.input(str(v_temp))
+            a_input = ffmpeg.input(str(a_temp))
+            (
+                ffmpeg
+                .output(v_input, a_input, str(v_final), vcodec="copy", acodec="aac")
+                .overwrite_output()
+                .run(quiet=True)
+            )
+            v_temp.unlink(missing_ok=True)
+            a_temp.unlink(missing_ok=True)
+        elif video_ok:
+            v_input = ffmpeg.input(str(v_temp))
+            (
+                ffmpeg
+                .output(v_input, str(v_final), vcodec="copy", an=None)
+                .overwrite_output()
+                .run(quiet=True)
+            )
+            v_temp.unlink(missing_ok=True)
+        elif audio_ok:
+            convert_to_wav(a_temp, output_dir)
+    except (ffmpeg.Error, FileNotFoundError) as e:
+        console.print(f"[red]ffmpeg 处理失败: {e}[/red]")
+        await store.mark("video", content_id, "failed", str(output_dir))
+        return False
+
+    await store.mark("video", content_id, "done", str(output_dir))
+    return True
+
+
 async def _download_single_part(
     v: video.Video,
     cid: int,
@@ -275,212 +435,14 @@ async def _download_single_part(
     content_id: str,
     credential: Credential,
 ) -> bool:
-    """
-    下载单个分P的视频内容。
-
-    Args:
-        v: Video对象
-        cid: 分P的CID
-        output_dir: 输出目录
-        video_mode: 下载模式
-        retries: 重试次数
-        store: 存储对象
-        content_id: 内容ID（用于标记状态）
-        credential: 认证凭据
-
-    Returns:
-        True表示成功，False表示失败
-    """
-
-    async def _get_streams(mode: str):
-        """
-        重新获取下载URL并解析流。
-
-        使用VideoDownloadURLDataDetecter解析API返回的下载URL数据，
-        提取最佳质量的视频流和音频流。
-
-        Returns:
-            (VideoStreamDownloadURL, AudioStreamDownloadURL) 元组
-        """
-        dd = await v.get_download_url(cid=cid)
-        det = VideoDownloadURLDataDetecter(dd)
-        streams = det.detect_best_streams()
-
-        vs = None  # 视频流
-        aus = None  # 音频流
-        for s in streams:
-            if isinstance(s, VideoStreamDownloadURL) and vs is None:
-                vs = s
-            if isinstance(s, AudioStreamDownloadURL) and aus is None:
-                aus = s
-        return vs, aus
-
-    async def _download_with_refresh(get_url_fn, path: Path, label: str):
-        """
-        带URL刷新重试的下载。
-
-        内层download_file重试用同一URL；若均失败，重新获取URL再试一次。
-        这样可以应对URL过期的情况。
-
-        Args:
-            get_url_fn: 异步函数，返回下载URL
-            path: 输出路径
-            label: 日志标签
-
-        Returns:
-            True成功，False失败
-        """
-        for outer in range(2):
-            url = await get_url_fn()
-            if not url:
-                return False
-            ok = await download_file(url, path, credential, retries=retries)
-            if ok:
-                return True
-            if outer == 0:
-                console.print(f"[yellow]{label} 下载失败，刷新URL重试...[/yellow]")
-                await asyncio.sleep(3)
-        return False
-
     try:
-        # subtitle-only模式：仅下载字幕
         if video_mode == "subtitle-only":
-            ok = await _download_subtitle(v, cid, output_dir, credential)
-            # 无字幕标记为skipped（不再重试）
-            await store.mark("video", content_id, "done" if ok else "skipped", str(output_dir))
-            return True
-
-        # audio-only模式：仅下载音频轨
+            return await _download_subtitle_only(v, cid, output_dir, credential, store, content_id)
         if video_mode == "audio-only":
-            async def _get_audio_url():
-                _, aus = await _get_streams("audio")
-                return aus.url if aus else None
-
-            # 下载m4a临时文件
-            temp_path = output_dir / "audio_temp.m4a"
-            ok = await _download_with_refresh(_get_audio_url, temp_path, "音频")
-
-            if ok:
-                # ffmpeg转码为WAV
-                # PCM 16bit 16kHz 单声道：无压缩、标准采样率、单声道
-                import ffmpeg
-                try:
-                    (
-                        ffmpeg
-                        .input(str(temp_path))
-                        .output(str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=16000, ac=1)
-                        .overwrite_output()
-                        .run(quiet=True)
-                    )
-                    # 删除临时文件
-                    temp_path.unlink(missing_ok=True)
-                except (ffmpeg.Error, FileNotFoundError) as e:
-                    console.print(f"[red]音频转WAV失败: {e}[/red]")
-                    temp_path.unlink(missing_ok=True)
-                    await store.mark("video", content_id, "failed", str(output_dir))
-                    return False
-                await store.mark("video", content_id, "done", str(output_dir))
-            else:
-                temp_path.unlink(missing_ok=True)
-                await store.mark("video", content_id, "failed", str(output_dir))
-            return ok
-
-        # video-only模式：仅下载视频轨
+            return await _download_audio_only(v, cid, output_dir, credential, store, content_id, retries)
         if video_mode == "video-only":
-            async def _get_video_url():
-                vs, _ = await _get_streams("video")
-                return vs.url if vs else None
-
-            ok = await _download_with_refresh(_get_video_url, output_dir / "video.m4v", "视频")
-            if ok:
-                await store.mark("video", content_id, "done", str(output_dir))
-            else:
-                await store.mark("video", content_id, "failed", str(output_dir))
-            return ok
-
-        # full模式：下载视频流和音频流并合并
-        vs, aus = await _get_streams("full")
-        if not vs and not aus:
-            console.print("[red]未找到音视频流[/red]")
-            await store.mark("video", content_id, "failed", str(output_dir))
-            return False
-
-        video_ok = None
-        audio_ok = None
-
-        # 下载视频轨
-        if vs:
-            async def _get_video_url():
-                v, _ = await _get_streams("full")
-                return v.url if v else None
-            video_ok = await _download_with_refresh(_get_video_url, output_dir / "video_temp.m4v", "视频")
-
-        # 下载音频轨
-        if aus:
-            async def _get_audio_url():
-                _, a = await _get_streams("full")
-                return a.url if a else None
-            audio_ok = await _download_with_refresh(_get_audio_url, output_dir / "audio_temp.m4a", "音频")
-
-        # 检查下载完整性
-        if (vs and not video_ok) or (aus and not audio_ok):
-            console.print("[red]音视频下载不完整[/red]")
-            # 清理临时文件
-            (output_dir / "video_temp.m4v").unlink(missing_ok=True)
-            (output_dir / "audio_temp.m4a").unlink(missing_ok=True)
-            await store.mark("video", content_id, "failed", str(output_dir))
-            return False
-
-        # ffmpeg合流
-        import ffmpeg
-        try:
-            v_temp = output_dir / "video_temp.m4v"
-            a_temp = output_dir / "audio_temp.m4a"
-            v_final = output_dir / "video.mp4"
-
-            if video_ok and audio_ok:
-                # 音视频都有：合流为mp4
-                # vcodec="copy": 视频流直接复制（不重新编码）
-                # acodec="aac": 音频编码为AAC（兼容性最好）
-                v_input = ffmpeg.input(str(v_temp))
-                a_input = ffmpeg.input(str(a_temp))
-                (
-                    ffmpeg
-                    .output(v_input, a_input, str(v_final), vcodec="copy", acodec="aac")
-                    .overwrite_output()
-                    .run(quiet=True)
-                )
-                v_temp.unlink(missing_ok=True)
-                a_temp.unlink(missing_ok=True)
-            elif video_ok:
-                # 只有视频：去除音频轨道
-                # an=None: 移除音频流
-                v_input = ffmpeg.input(str(v_temp))
-                (
-                    ffmpeg
-                    .output(v_input, str(v_final), vcodec="copy", an=None)
-                    .overwrite_output()
-                    .run(quiet=True)
-                )
-                v_temp.unlink(missing_ok=True)
-            elif audio_ok:
-                # 只有音频：转码为WAV
-                a_input = ffmpeg.input(str(a_temp))
-                (
-                    ffmpeg
-                    .output(a_input, str(output_dir / "audio.wav"), acodec="pcm_s16le", ar=16000, ac=1)
-                    .overwrite_output()
-                    .run(quiet=True)
-                )
-                a_temp.unlink(missing_ok=True)
-        except (ffmpeg.Error, FileNotFoundError) as e:
-            console.print(f"[red]ffmpeg 处理失败: {e}[/red]")
-            await store.mark("video", content_id, "failed", str(output_dir))
-            return False
-
-        await store.mark("video", content_id, "done", str(output_dir))
-        return True
-
+            return await _download_video_only(v, cid, output_dir, credential, store, content_id, retries)
+        return await _download_full(v, cid, output_dir, credential, store, content_id, retries)
     except Exception as e:
         console.print(f"[red]视频 {content_id} 处理失败: {e}[/red]")
         await store.mark("video", content_id, "failed", str(output_dir))

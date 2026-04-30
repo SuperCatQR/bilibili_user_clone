@@ -48,8 +48,48 @@ from fetcher.article import download_article
 from fetcher.dynamic import download_dynamic
 from bilibili_api import user
 
-# Rich控制台实例，用于彩色输出
 console = Console()
+
+ENUM_FNS = {
+    "video": ("视频", enumerate_videos),
+    "audio": ("音频", enumerate_audios),
+    "article": ("专栏", enumerate_articles),
+    "dynamic": ("动态", enumerate_dynamics),
+}
+
+
+async def _process_items(items: list[DownloadItem], download_fn, content_type_label: str, stats: dict, interval: int):
+    """
+    遍历并下载一组内容项。
+
+    每项之间等待 interval 秒，每 BATCH_SIZE 项触发阶梯暂停
+    （5s→10s→15s→20s 循环），避免触发B站412限速。
+    """
+    count = 0
+    for item in items:
+        stats["total"] += 1
+        console.print(f"\n[cyan][{content_type_label}][/] {item.content_id} - {item.title}")
+
+        try:
+            ok = await download_fn(item)
+            if ok:
+                stats["done"] += 1
+                console.print(f"[green]  ✓ 完成[/green]")
+            else:
+                stats["failed"] += 1
+                console.print(f"[red]  ✗ 失败[/red]")
+        except Exception as e:
+            stats["failed"] += 1
+            console.print(f"[red]  ✗ 异常: {e}[/red]")
+
+        count += 1
+        if count % BATCH_SIZE == 0:
+            tier = min((count // BATCH_SIZE - 1) % len(BATCH_PAUSE_STEPS), len(BATCH_PAUSE_STEPS) - 1)
+            pause = BATCH_PAUSE_STEPS[tier]
+            console.print(f"[dim]已处理 {count} 项，暂停 {pause}s...[/dim]")
+            await asyncio.sleep(pause)
+        else:
+            await asyncio.sleep(interval)
 
 
 async def save_user_info(uid: int, credential, base_dir: Path):
@@ -129,91 +169,35 @@ async def run_clone(uid: int, output: str, types: str, video_mode: str, interval
     await store.open()
 
     try:
-        # 统计信息
         stats = {"total": 0, "done": 0, "failed": 0}
 
-        async def _process_items(items, download_fn, content_type_label):
-            """
-            遍历并下载一组内容项。
-
-            每项之间等待 interval 秒，每 BATCH_SIZE 项触发阶梯暂停
-            （5s→10s→15s→20s 循环），避免触发B站412限速。
-
-            Args:
-                items: DownloadItem列表
-                download_fn: 下载函数（接受item参数）
-                content_type_label: 内容类型标签（用于日志输出）
-            """
-            count = 0
-            for item in items:
-                stats["total"] += 1
-                console.print(f"\n[cyan][{content_type_label}][/] {item.content_id} - {item.title}")
-
-                try:
-                    ok = await download_fn(item)
-                    if ok:
-                        stats["done"] += 1
-                        console.print(f"[green]  ✓ 完成[/green]")
-                    else:
-                        stats["failed"] += 1
-                        console.print(f"[red]  ✗ 失败[/red]")
-                except Exception as e:
-                    stats["failed"] += 1
-                    console.print(f"[red]  ✗ 异常: {e}[/red]")
-
-                # 阶梯暂停逻辑
-                count += 1
-                if count % BATCH_SIZE == 0:
-                    # 计算阶梯暂停时间
-                    # tier: 0, 1, 2, 3, 0, 1, 2, 3, ...
-                    # BATCH_PAUSE_STEPS: [5, 10, 15, 20]
-                    tier = min((count // BATCH_SIZE - 1) % len(BATCH_PAUSE_STEPS), len(BATCH_PAUSE_STEPS) - 1)
-                    pause = BATCH_PAUSE_STEPS[tier]
-                    console.print(f"[dim]已处理 {count} 项，暂停 {pause}s...[/dim]")
-                    await asyncio.sleep(pause)
-                else:
-                    # 普通间隔
-                    await asyncio.sleep(interval)
-
-        # 按类型分别处理
-        # 每种类型独立枚举和下载，便于中断后按类型恢复
-
         if "video" in selected_types:
-            console.print("\n[bold]枚举视频...[/bold]")
-            videos = await enumerate_videos(uid, credential, store, hours, retries=retry)
-            console.print(f"  待下载: {len(videos)} 个视频")
-
-            # 闭包捕获所有需要的变量
-            async def _dl_video(item):
-                return await download_video(item, uid, credential, store, base_dir, video_mode, retries=retry)
-            await _process_items(videos, _dl_video, "视频")
+            label, enum_fn = ENUM_FNS["video"]
+            console.print(f"\n[bold]枚举{label}...[/bold]")
+            items = await enum_fn(uid, credential, store, hours, retries=retry)
+            console.print(f"  待下载: {len(items)} 个{label}")
+            await _process_items(items, lambda item: download_video(item, uid, credential, store, base_dir, video_mode, retries=retry), label, stats, interval)
 
         if "audio" in selected_types:
-            console.print("\n[bold]枚举音频...[/bold]")
-            audios = await enumerate_audios(uid, credential, store, hours, retries=retry)
-            console.print(f"  待下载: {len(audios)} 个音频")
-
-            async def _dl_audio(item):
-                return await download_audio(item, uid, credential, store, base_dir, retries=retry)
-            await _process_items(audios, _dl_audio, "音频")
+            label, enum_fn = ENUM_FNS["audio"]
+            console.print(f"\n[bold]枚举{label}...[/bold]")
+            items = await enum_fn(uid, credential, store, hours, retries=retry)
+            console.print(f"  待下载: {len(items)} 个{label}")
+            await _process_items(items, lambda item: download_audio(item, uid, credential, store, base_dir, retries=retry), label, stats, interval)
 
         if "article" in selected_types:
-            console.print("\n[bold]枚举专栏...[/bold]")
-            articles = await enumerate_articles(uid, credential, store, hours, retries=retry)
-            console.print(f"  待下载: {len(articles)} 个专栏")
-
-            async def _dl_article(item):
-                return await download_article(item, uid, credential, store, base_dir, retries=retry)
-            await _process_items(articles, _dl_article, "专栏")
+            label, enum_fn = ENUM_FNS["article"]
+            console.print(f"\n[bold]枚举{label}...[/bold]")
+            items = await enum_fn(uid, credential, store, hours, retries=retry)
+            console.print(f"  待下载: {len(items)} 个{label}")
+            await _process_items(items, lambda item: download_article(item, uid, credential, store, base_dir, retries=retry), label, stats, interval)
 
         if "dynamic" in selected_types:
-            console.print("\n[bold]枚举动态...[/bold]")
-            dynamics = await enumerate_dynamics(uid, credential, store, hours, retries=retry)
-            console.print(f"  待下载: {len(dynamics)} 条动态")
-
-            async def _dl_dynamic(item):
-                return await download_dynamic(item, uid, credential, store, base_dir, retries=retry)
-            await _process_items(dynamics, _dl_dynamic, "动态")
+            label, enum_fn = ENUM_FNS["dynamic"]
+            console.print(f"\n[bold]枚举{label}...[/bold]")
+            items = await enum_fn(uid, credential, store, hours, retries=retry)
+            console.print(f"  待下载: {len(items)} 个{label}")
+            await _process_items(items, lambda item: download_dynamic(item, uid, credential, store, base_dir, retries=retry), label, stats, interval)
 
         # 输出下载报告
         console.print("\n[bold]===== 下载报告 =====[/bold]")
@@ -279,37 +263,16 @@ async def run_update_cache(uid: int, types: str, retry: int):
     try:
         stats = {}
 
-        if "video" in selected_types:
-            console.print("\n[bold]更新视频缓存...[/bold]")
-            await store.clear_enum_cache("video")
-            items = await enumerate_videos(uid, credential, store, retries=retry, force=True)
-            await store.save_enum_cache("video", items)
-            stats["video"] = len(items)
-            console.print(f"  共 {len(items)} 个视频")
-
-        if "audio" in selected_types:
-            console.print("\n[bold]更新音频缓存...[/bold]")
-            await store.clear_enum_cache("audio")
-            items = await enumerate_audios(uid, credential, store, retries=retry, force=True)
-            await store.save_enum_cache("audio", items)
-            stats["audio"] = len(items)
-            console.print(f"  共 {len(items)} 个音频")
-
-        if "article" in selected_types:
-            console.print("\n[bold]更新专栏缓存...[/bold]")
-            await store.clear_enum_cache("article")
-            items = await enumerate_articles(uid, credential, store, retries=retry, force=True)
-            await store.save_enum_cache("article", items)
-            stats["article"] = len(items)
-            console.print(f"  共 {len(items)} 个专栏")
-
-        if "dynamic" in selected_types:
-            console.print("\n[bold]更新动态缓存...[/bold]")
-            await store.clear_enum_cache("dynamic")
-            items = await enumerate_dynamics(uid, credential, store, retries=retry, force=True)
-            await store.save_enum_cache("dynamic", items)
-            stats["dynamic"] = len(items)
-            console.print(f"  共 {len(items)} 条动态")
+        for ctype in ("video", "audio", "article", "dynamic"):
+            if ctype not in selected_types:
+                continue
+            label, enum_fn = ENUM_FNS[ctype]
+            console.print(f"\n[bold]更新{label}缓存...[/bold]")
+            await store.clear_enum_cache(ctype)
+            items = await enum_fn(uid, credential, store, retries=retry, force=True)
+            await store.save_enum_cache(ctype, items)
+            stats[ctype] = len(items)
+            console.print(f"  共 {len(items)} 个{label}")
 
         console.print("\n[bold]===== 缓存更新报告 =====[/bold]")
         table = Table()

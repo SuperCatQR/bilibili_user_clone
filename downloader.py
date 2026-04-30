@@ -219,50 +219,39 @@ async def download_file(
     if url.startswith("//"):
         url = "https:" + url
 
-    # 重试循环
+    timeout = aiohttp.ClientTimeout(total=600, connect=30)
+
     for attempt in range(retries):
         try:
-            # 根据参数决定使用共享session还是创建新session
-            # 共享session可以复用TCP连接，提高效率
             if use_shared_session:
                 session = await get_shared_session(headers)
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=600, connect=30)) as resp:
-                    # 处理412限速响应
-                    if resp.status == 412:
-                        # 指数退避：等待时间 = BACKOFF_BASE * 2^attempt
-                        wait = min(BACKOFF_BASE * (2 ** attempt), BACKOFF_MAX)
-                        console.print(f"[yellow]412 限速，等待 {wait}s...[/yellow]")
-                        await asyncio.sleep(wait)
-                        continue
-
-                    # 非200响应，记录并重试
-                    if resp.status != 200:
-                        console.print(f"[red]HTTP {resp.status}[/red]")
-                        continue
-
-                    # 流式写入文件
-                    # iter_chunked(CHUNK_SIZE) 每次读取CHUNK_SIZE字节
-                    # 避免将整个文件加载到内存
-                    with open(output_path, "wb") as f:
-                        async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
-                            f.write(chunk)
-                    return True
+                ctx = session.get(url, timeout=timeout)
             else:
-                # 创建独立session（不复用TCP连接）
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=600, connect=30)) as resp:
-                        if resp.status == 412:
-                            wait = min(BACKOFF_BASE * (2 ** attempt), BACKOFF_MAX)
-                            console.print(f"[yellow]412 限速，等待 {wait}s...[/yellow]")
-                            await asyncio.sleep(wait)
-                            continue
-                        if resp.status != 200:
-                            console.print(f"[red]HTTP {resp.status}[/red]")
-                            continue
-                        with open(output_path, "wb") as f:
-                            async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
-                                f.write(chunk)
-                        return True
+                session = aiohttp.ClientSession(headers=headers)
+                ctx = session.get(url, timeout=timeout)
+
+            async with ctx as resp:
+                if resp.status == 412:
+                    if not use_shared_session:
+                        await session.close()
+                    wait = min(BACKOFF_BASE * (2 ** attempt), BACKOFF_MAX)
+                    console.print(f"[yellow]412 限速，等待 {wait}s...[/yellow]")
+                    await asyncio.sleep(wait)
+                    continue
+
+                if resp.status != 200:
+                    if not use_shared_session:
+                        await session.close()
+                    console.print(f"[red]HTTP {resp.status}[/red]")
+                    continue
+
+                with open(output_path, "wb") as f:
+                    async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
+                        f.write(chunk)
+
+            if not use_shared_session:
+                await session.close()
+            return True
 
         except (
             aiohttp.ClientError,        # HTTP客户端错误
