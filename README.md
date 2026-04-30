@@ -31,7 +31,7 @@ uv sync
 pip install -e .
 ```
 
-需要系统已安装 [ffmpeg](https://ffmpeg.org/)（仅 video `full` 模式需要合流，其他模式不需要）。
+需要系统已安装 [ffmpeg](https://ffmpeg.org/)（`full` 模式合流、`audio-only` 模式转码 WAV 均需要；`video-only` 模式不需要）。
 
 ### 认证
 
@@ -74,7 +74,7 @@ uv run main.py clone 946974 --types video,dynamic --video-mode subtitle-only
 |------|----------|------|
 | `full` | `video.mp4` | 视频音频合流（默认，需要 ffmpeg） |
 | `video-only` | `video.m4v` | 仅视频轨 |
-| `audio-only` | `audio.m4a` | 仅音频轨 |
+| `audio-only` | `audio.wav` | 仅音频轨（PCM 16bit 16kHz 单声道，需要 ffmpeg） |
 | `subtitle-only` | `subtitles.srt` | 仅字幕（中文优先） |
 | `none` | — | 跳过视频下载，仅保存 `info.json` |
 
@@ -126,8 +126,8 @@ output/<UID>/
 +-- info.json                    # 用户资料快照
 +-- videos/
 |   +-- <BV号> - <标题>/
-|       +-- video.m4v            # full / video-only 模式
-|       +-- audio.wav            # full / audio-only 模式（PCM 16bit WAV）
+|       +-- video.mp4            # full 模式（视频音频合流）
+|       +-- audio.wav            # full / audio-only 模式（PCM 16bit 16kHz 单声道）
 |       +-- subtitles.srt        # subtitle-only 模式
 |       +-- info.json            # 视频元数据（所有模式均输出）
 +-- audios/
@@ -218,7 +218,7 @@ output/<UID>/
 
 | video-mode | 产出文件 | 说明 |
 |------------|----------|------|
-| `full` | `info.json` + `video.m4v` + `audio.wav` | 视频轨+音频轨分离，音频转WAV（需要 ffmpeg） |
+| `full` | `info.json` + `video.mp4` | 视频音频合流（需要 ffmpeg） |
 | `video-only` | `info.json` + `video.m4v` | 仅视频轨 |
 | `audio-only` | `info.json` + `audio.wav` | 仅音频轨，转WAV |
 | `subtitle-only` | `info.json` + `subtitles.srt` | 仅字幕（中文优先，无中文取首个） |
@@ -409,7 +409,7 @@ output/<UID>/
 
 #### `audio.wav` -- 音频文件
 
-从 `Audio.get_download_url()` 返回的 CDN 地址下载原始音频，再通过 ffmpeg 转码为 PCM 16bit 44100Hz 立体声 WAV 格式（无压缩、无切分）。
+从 `Audio.get_download_url()` 返回的 CDN 地址下载原始音频，再通过 ffmpeg 转码为 PCM 16bit 16kHz 单声道 WAV 格式（无压缩、无切分）。
 
 ---
 
@@ -554,7 +554,7 @@ output/<UID>/
 
 下载记录保存在 SQLite 数据库中，中断后重新运行会自动跳过已完成的内容。
 
-- **数据库路径**：`~/.bilibili-cli/downloads.db`（可通过环境变量 `BILIBILI_CLONE_DB_DIR` 修改）
+- **数据库路径**：`.bilibili-clone/downloads.db`（可通过环境变量 `BILIBILI_CLONE_DB_DIR` 修改）
 - **表结构**：`downloads` 表，主键 `(uid, content_type, content_id)`
 
 | 字段 | 类型 | 说明 |
