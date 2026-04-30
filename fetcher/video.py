@@ -208,28 +208,50 @@ async def _download_single_part(
     Returns:
         True表示成功，False表示失败
     """
+    async def _get_streams(mode: str):
+        """重新获取下载URL并解析流。"""
+        dd = await v.get_download_url(cid=cid)
+        det = VideoDownloadURLDataDetecter(dd)
+        streams = det.detect_best_streams()
+        vs = None
+        aus = None
+        for s in streams:
+            if isinstance(s, VideoStreamDownloadURL) and vs is None:
+                vs = s
+            if isinstance(s, AudioStreamDownloadURL) and aus is None:
+                aus = s
+        return vs, aus
+
+    async def _download_with_refresh(get_url_fn, path: Path, label: str):
+        """
+        带URL刷新重试的下载。
+        内层download_file重试用同一URL；若均失败，重新获取URL再试一次。
+        """
+        for outer in range(2):
+            url = await get_url_fn()
+            if not url:
+                return False
+            ok = await download_file(url, path, credential, retries=retries)
+            if ok:
+                return True
+            if outer == 0:
+                console.print(f"[yellow]{label} 下载失败，刷新URL重试...[/yellow]")
+                await asyncio.sleep(3)
+        return False
+
     try:
         if video_mode == "subtitle-only":
             ok = await _download_subtitle(v, cid, output_dir, credential)
             await store.mark("video", content_id, "done" if ok else "skipped", str(output_dir))
             return True
 
-        download_data = await v.get_download_url(cid=cid)
-        detecter = VideoDownloadURLDataDetecter(download_data)
-
         if video_mode == "audio-only":
-            streams = detecter.detect_best_streams()
-            audio_stream = None
-            for s in streams:
-                if isinstance(s, AudioStreamDownloadURL):
-                    audio_stream = s
-                    break
-            if not audio_stream:
-                console.print("[red]未找到音频流[/red]")
-                await store.mark("video", content_id, "failed", str(output_dir))
-                return False
+            async def _get_audio_url():
+                _, aus = await _get_streams("audio")
+                return aus.url if aus else None
+
             temp_path = output_dir / "audio_temp.m4a"
-            ok = await download_file(audio_stream.url, temp_path, credential, retries=retries)
+            ok = await _download_with_refresh(_get_audio_url, temp_path, "音频")
             if ok:
                 import ffmpeg
                 try:
@@ -253,17 +275,11 @@ async def _download_single_part(
             return ok
 
         if video_mode == "video-only":
-            streams = detecter.detect_best_streams()
-            video_stream = None
-            for s in streams:
-                if isinstance(s, VideoStreamDownloadURL):
-                    video_stream = s
-                    break
-            if not video_stream:
-                console.print("[red]未找到视频流[/red]")
-                await store.mark("video", content_id, "failed", str(output_dir))
-                return False
-            ok = await download_file(video_stream.url, output_dir / "video.m4v", credential, retries=retries)
+            async def _get_video_url():
+                vs, _ = await _get_streams("video")
+                return vs.url if vs else None
+
+            ok = await _download_with_refresh(_get_video_url, output_dir / "video.m4v", "视频")
             if ok:
                 await store.mark("video", content_id, "done", str(output_dir))
             else:
@@ -271,16 +287,8 @@ async def _download_single_part(
             return ok
 
         # full模式：下载视频流和音频流并合并
-        streams = detecter.detect_best_streams()
-        video_stream = None
-        audio_stream = None
-        for s in streams:
-            if isinstance(s, VideoStreamDownloadURL) and video_stream is None:
-                video_stream = s
-            if isinstance(s, AudioStreamDownloadURL) and audio_stream is None:
-                audio_stream = s
-
-        if not video_stream and not audio_stream:
+        vs, aus = await _get_streams("full")
+        if not vs and not aus:
             console.print("[red]未找到音视频流[/red]")
             await store.mark("video", content_id, "failed", str(output_dir))
             return False
@@ -288,12 +296,18 @@ async def _download_single_part(
         video_ok = None
         audio_ok = None
 
-        if video_stream:
-            video_ok = await download_file(video_stream.url, output_dir / "video_temp.m4v", credential, retries=retries)
-        if audio_stream:
-            audio_ok = await download_file(audio_stream.url, output_dir / "audio_temp.m4a", credential, retries=retries)
+        if vs:
+            async def _get_video_url():
+                v, _ = await _get_streams("full")
+                return v.url if v else None
+            video_ok = await _download_with_refresh(_get_video_url, output_dir / "video_temp.m4v", "视频")
+        if aus:
+            async def _get_audio_url():
+                _, a = await _get_streams("full")
+                return a.url if a else None
+            audio_ok = await _download_with_refresh(_get_audio_url, output_dir / "audio_temp.m4a", "音频")
 
-        if (video_stream and not video_ok) or (audio_stream and not audio_ok):
+        if (vs and not video_ok) or (aus and not audio_ok):
             console.print("[red]音视频下载不完整[/red]")
             (output_dir / "video_temp.m4v").unlink(missing_ok=True)
             (output_dir / "audio_temp.m4a").unlink(missing_ok=True)
