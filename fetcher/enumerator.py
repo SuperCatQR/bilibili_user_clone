@@ -29,21 +29,24 @@ class DownloadItem:
     extra: dict
 
 
-async def _load_cached_items(content_type: str, store: DownloadStore) -> list[DownloadItem] | None:
+async def _load_cached_items(content_type: str, store: DownloadStore) -> tuple[list[DownloadItem] | None, set[str]]:
     """
     从缓存加载指定类型的下载项，过滤掉已完成的项。
-    
+    同时返回缓存中所有内容的ID集合（用于新鲜度检查）。
+
     Args:
         content_type: 内容类型（video/audio/article/dynamic）
         store: 存储对象
-    
+
     Returns:
-        未完成的DownloadItem列表，如果无缓存返回None
+        (未完成的DownloadItem列表, 所有缓存ID集合)
+        如果无缓存返回 (None, set())
     """
     cached = await store.load_enum_cache(content_type)
     if cached is None:
-        return None
-    
+        return None, set()
+
+    all_ids = {d["content_id"] for d in cached}
     result = []
     for d in cached:
         if not await store.is_done(content_type, d["content_id"]):
@@ -52,7 +55,7 @@ async def _load_cached_items(content_type: str, store: DownloadStore) -> list[Do
                 title=d["title"], extra=d["extra"],
             ))
     console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(result)} 已完成)[/dim]")
-    return result
+    return result, all_ids
 
 
 def _cutoff(hours: int | None) -> float | None:
@@ -83,23 +86,45 @@ async def _retry_api(fn, retries=DEFAULT_RETRY):
 async def enumerate_videos(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None, retries: int = DEFAULT_RETRY) -> list[DownloadItem]:
     """
     枚举用户视频列表。
-    
+
     分页遍历 get_videos API，每页30条。遇到 created < cutoff 的跳过，
     整页都早于 cutoff 时终止翻页（提前终止优化）。已完成的项（is_done）跳过。
-    无 --hours 时使用枚举缓存，避免重复翻页。
+    无 --hours 时先查API第一页判断缓存是否新鲜，有新增内容才完整重新枚举。
     """
+    cached_items = None
+    cached_ids = set()
     if hours is None:
-        cached_items = await _load_cached_items("video", store)
-        if cached_items is not None:
-            return cached_items
+        cached_items, cached_ids = await _load_cached_items("video", store)
 
-    items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
+
+    # 先获取第一页做新鲜度检查
+    resp = await _retry_api(lambda: u.get_videos(pn=1, ps=30), retries=retries)
+    first_vlist = resp.get("list", {}).get("vlist", [])
+
+    # 无 --hours 且缓存存在时，检查第一页是否有新增内容
+    if hours is None and cached_items is not None:
+        has_new = False
+        for v in first_vlist:
+            bvid = v.get("bvid", "")
+            if bvid and bvid not in cached_ids:
+                has_new = True
+                break
+        if not has_new:
+            console.print("  [dim](缓存新鲜，无新增内容)[/dim]")
+            return cached_items
+        console.print("  [yellow]检测到新增内容，重新枚举...[/yellow]")
+
+    # 完整枚举（含第一页已获取的数据）
+    items = []
     pn = 1
     while True:
-        resp = await _retry_api(lambda: u.get_videos(pn=pn, ps=30), retries=retries)
-        vlist = resp.get("list", {}).get("vlist", [])
+        if pn == 1:
+            vlist = first_vlist
+        else:
+            resp = await _retry_api(lambda: u.get_videos(pn=pn, ps=30), retries=retries)
+            vlist = resp.get("list", {}).get("vlist", [])
         if not vlist:
             break
         page_all_old = True
@@ -133,29 +158,57 @@ async def enumerate_videos(uid: int, credential: Credential, store: DownloadStor
 async def enumerate_audios(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None, retries: int = DEFAULT_RETRY) -> list[DownloadItem]:
     """
     枚举用户音频区列表。
-    
+
     兼容API返回格式差异：data可能为列表或字典。
     使用 pageCount 判断是否还有下一页。
-    无 --hours 时使用枚举缓存。
+    无 --hours 时先查API第一页判断缓存是否新鲜，有新增内容才完整重新枚举。
     """
+    cached_items = None
+    cached_ids = set()
     if hours is None:
-        cached_items = await _load_cached_items("audio", store)
-        if cached_items is not None:
-            return cached_items
+        cached_items, cached_ids = await _load_cached_items("audio", store)
 
-    items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
+
+    # 先获取第一页做新鲜度检查
+    resp = await _retry_api(lambda: u.get_audios(pn=1, ps=30), retries=retries)
+    data = resp.get("data", resp)
+    if isinstance(data, list):
+        first_aulist = data
+    elif isinstance(data, dict):
+        first_aulist = data.get("list", [])
+    else:
+        first_aulist = []
+
+    # 无 --hours 且缓存存在时，检查第一页是否有新增内容
+    if hours is None and cached_items is not None:
+        has_new = False
+        for a in first_aulist:
+            auid = str(a.get("id", ""))
+            if auid and auid not in cached_ids:
+                has_new = True
+                break
+        if not has_new:
+            console.print("  [dim](缓存新鲜，无新增内容)[/dim]")
+            return cached_items
+        console.print("  [yellow]检测到新增内容，重新枚举...[/yellow]")
+
+    # 完整枚举
+    items = []
     pn = 1
     while True:
-        resp = await _retry_api(lambda: u.get_audios(pn=pn, ps=30), retries=retries)
-        data = resp.get("data", resp)
-        if isinstance(data, list):
-            aulist = data
-        elif isinstance(data, dict):
-            aulist = data.get("list", [])
+        if pn == 1:
+            aulist = first_aulist
         else:
-            aulist = []
+            resp = await _retry_api(lambda: u.get_audios(pn=pn, ps=30), retries=retries)
+            data = resp.get("data", resp)
+            if isinstance(data, list):
+                aulist = data
+            elif isinstance(data, dict):
+                aulist = data.get("list", [])
+            else:
+                aulist = []
         if not aulist:
             break
         page_all_old = True
@@ -190,19 +243,41 @@ async def enumerate_audios(uid: int, credential: Credential, store: DownloadStor
 
 
 async def enumerate_articles(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None, retries: int = DEFAULT_RETRY) -> list[DownloadItem]:
-    """枚举用户专栏列表，使用 get_articles API 的 articles 字段。无 --hours 时使用枚举缓存。"""
+    """枚举用户专栏列表，使用 get_articles API 的 articles 字段。无 --hours 时先查API第一页判断缓存是否新鲜。"""
+    cached_items = None
+    cached_ids = set()
     if hours is None:
-        cached_items = await _load_cached_items("article", store)
-        if cached_items is not None:
-            return cached_items
+        cached_items, cached_ids = await _load_cached_items("article", store)
 
-    items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
+
+    # 先获取第一页做新鲜度检查
+    resp = await _retry_api(lambda: u.get_articles(pn=1, ps=30), retries=retries)
+    first_article_list = resp.get("articles", [])
+
+    # 无 --hours 且缓存存在时，检查第一页是否有新增内容
+    if hours is None and cached_items is not None:
+        has_new = False
+        for a in first_article_list:
+            aid = str(a.get("id", ""))
+            if aid and aid not in cached_ids:
+                has_new = True
+                break
+        if not has_new:
+            console.print("  [dim](缓存新鲜，无新增内容)[/dim]")
+            return cached_items
+        console.print("  [yellow]检测到新增内容，重新枚举...[/yellow]")
+
+    # 完整枚举
+    items = []
     pn = 1
     while True:
-        resp = await _retry_api(lambda: u.get_articles(pn=pn, ps=30), retries=retries)
-        article_list = resp.get("articles", [])
+        if pn == 1:
+            article_list = first_article_list
+        else:
+            resp = await _retry_api(lambda: u.get_articles(pn=pn, ps=30), retries=retries)
+            article_list = resp.get("articles", [])
         if not article_list:
             break
         page_all_old = True
@@ -236,25 +311,53 @@ async def enumerate_articles(uid: int, credential: Credential, store: DownloadSt
 async def enumerate_dynamics(uid: int, credential: Credential, store: DownloadStore, hours: int | None = None, retries: int = DEFAULT_RETRY) -> list[DownloadItem]:
     """
     枚举用户动态列表。
-    
+
     使用 offset 分页（非页码），has_more 判断是否继续。
     pub_ts 为发布时间戳（API返回可能为字符串，需强制转int）。
     raw 数据完整保存在 extra 中供下载模块使用。
-    无 --hours 时使用枚举缓存。
+    无 --hours 时先查API第一页判断缓存是否新鲜，有新增内容才完整重新枚举。
     """
+    cached_items = None
+    cached_ids = set()
     if hours is None:
-        cached_items = await _load_cached_items("dynamic", store)
-        if cached_items is not None:
-            return cached_items
+        cached_items, cached_ids = await _load_cached_items("dynamic", store)
 
-    items = []
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
+
+    # 先获取第一页做新鲜度检查
+    resp = await _retry_api(lambda: u.get_dynamics_new(offset=""), retries=retries)
+    first_dynamic_items = resp.get("items", [])
+    first_has_more = resp.get("has_more", False)
+    first_offset = resp.get("offset", "")
+
+    # 无 --hours 且缓存存在时，检查第一页是否有新增内容
+    if hours is None and cached_items is not None:
+        has_new = False
+        for item in first_dynamic_items:
+            dynamic_id = str(item.get("id_str", ""))
+            if dynamic_id and dynamic_id not in cached_ids:
+                has_new = True
+                break
+        if not has_new:
+            console.print("  [dim](缓存新鲜，无新增内容)[/dim]")
+            return cached_items
+        console.print("  [yellow]检测到新增内容，重新枚举...[/yellow]")
+
+    # 完整枚举
+    items = []
     offset = ""
+    is_first = True
     while True:
-        resp = await _retry_api(lambda: u.get_dynamics_new(offset=offset), retries=retries)
-        dynamic_items = resp.get("items", [])
-        has_more = resp.get("has_more", False)
+        if is_first:
+            dynamic_items = first_dynamic_items
+            has_more = first_has_more
+            offset = first_offset
+            is_first = False
+        else:
+            resp = await _retry_api(lambda: u.get_dynamics_new(offset=offset), retries=retries)
+            dynamic_items = resp.get("items", [])
+            has_more = resp.get("has_more", False)
         if not dynamic_items:
             break
         page_all_old = True
