@@ -25,6 +25,7 @@ CLI 入口模块
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -79,10 +80,10 @@ async def _process_items(items: list[DownloadItem], download_fn, content_type_la
         task = progress.add_task(f"下载{content_type_label}", total=len(items))
         for item in items:
             stats["total"] += 1
-            # 截断标题避免进度条过长
             short_title = item.title[:30] + ("..." if len(item.title) > 30 else "")
             progress.update(task, description=f"[cyan]{item.content_id}[/] {short_title}")
 
+            t0 = time.monotonic()
             try:
                 ok = await download_fn(item)
                 if ok:
@@ -91,10 +92,14 @@ async def _process_items(items: list[DownloadItem], download_fn, content_type_la
                     stats["failed"] += 1
             except Exception as e:
                 stats["failed"] += 1
+            elapsed = time.monotonic() - t0
 
             progress.advance(task)
 
             count += 1
+            # 跳过签名文件检查命中的项（耗时 < 0.1s）不 sleep，避免大量已存在项白等
+            if elapsed < 0.1:
+                continue
             if count % BATCH_SIZE == 0:
                 tier = min((count // BATCH_SIZE - 1) % len(BATCH_PAUSE_STEPS), len(BATCH_PAUSE_STEPS) - 1)
                 pause = BATCH_PAUSE_STEPS[tier]
