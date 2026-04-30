@@ -40,26 +40,27 @@ class DownloadItem:
     extra: dict
 
 
-async def _load_cached_items(content_type: str, store: DownloadStore) -> tuple[list[DownloadItem] | None, set[str], list[DownloadItem]]:
+async def _load_cached_items(content_type: str, store: DownloadStore) -> tuple[list[DownloadItem] | None, set[str], list[DownloadItem], set[str]]:
     """
     从缓存加载指定类型的下载项。
 
-    返回三个值：
+    返回四个值：
     1. 未完成的 DownloadItem 列表（用于下载）
     2. 所有缓存内容的 ID 集合（用于增量更新时判断是否在缓存中）
     3. 完整的缓存 DownloadItem 列表（用于增量更新时合并）
+    4. 所有已完成（done/skipped）的 content_id 集合（批量查询，用于跳过已完成项）
 
     Args:
         content_type: 内容类型（video/audio/article/dynamic）
         store: 存储对象
 
     Returns:
-        (未完成的项列表, 所有缓存ID集合, 完整缓存列表)
-        如果无缓存返回 (None, set(), [])
+        (未完成的项列表, 所有缓存ID集合, 完整缓存列表, 已完成ID集合)
+        如果无缓存返回 (None, set(), [], set())
     """
     cached, is_expired, age_hours = await store.load_enum_cache(content_type)
     if cached is None:
-        return None, set(), []
+        return None, set(), [], set()
 
     if is_expired:
         console.print(
@@ -69,10 +70,13 @@ async def _load_cached_items(content_type: str, store: DownloadStore) -> tuple[l
 
     all_ids = {d["content_id"] for d in cached}
 
+    # 批量获取所有已完成的 ID（一次查询替代 N 次 is_done()）
+    done_ids = await store.get_done_ids(content_type)
+
     # 未完成的项（用于返回给下载器）
     pending = []
     for d in cached:
-        if not await store.is_done(content_type, d["content_id"]):
+        if d["content_id"] not in done_ids:
             pending.append(DownloadItem(
                 content_type=d["content_type"], content_id=d["content_id"],
                 title=d["title"], extra=d["extra"],
@@ -87,7 +91,7 @@ async def _load_cached_items(content_type: str, store: DownloadStore) -> tuple[l
     ]
 
     console.print(f"  [dim](从缓存加载 {len(cached)} 项，{len(cached) - len(pending)} 已完成)[/dim]")
-    return pending, all_ids, full_cached
+    return pending, all_ids, full_cached, done_ids
 
 
 def _cutoff(hours: int | None) -> float | None:
@@ -166,7 +170,7 @@ def _parse_audio_list(resp) -> list:
 # Video
 # ============================================================
 
-async def _incremental_enum_videos(u, first_vlist, cached_ids, full_cached, cached_items, store, retries):
+async def _incremental_enum_videos(u, first_vlist, cached_ids, full_cached, cached_items, store, retries, done_ids):
     console.print("  [yellow]检测到新增内容，增量更新...[/yellow]")
     new_items = []
     pn = 1
@@ -189,7 +193,7 @@ async def _incremental_enum_videos(u, first_vlist, cached_ids, full_cached, cach
             if bvid in cached_ids:
                 continue
             page_all_cached = False
-            if await store.is_done("video", bvid):
+            if bvid in done_ids:
                 continue
             new_items.append(DownloadItem(
                 content_type="video",
@@ -210,7 +214,7 @@ async def _incremental_enum_videos(u, first_vlist, cached_ids, full_cached, cach
     return new_items + cached_items
 
 
-async def _full_enum_videos(u, first_vlist, cutoff, store, retries, hours):
+async def _full_enum_videos(u, first_vlist, cutoff, store, retries, hours, done_ids):
     items = []
     pn = 1
     while True:
@@ -236,7 +240,7 @@ async def _full_enum_videos(u, first_vlist, cutoff, store, retries, hours):
 
             page_all_old = False
 
-            if await store.is_done("video", bvid):
+            if bvid in done_ids:
                 continue
 
             items.append(DownloadItem(
@@ -262,8 +266,11 @@ async def enumerate_videos(uid: int, credential: Credential, store: DownloadStor
     cached_items = None
     cached_ids = set()
     full_cached = []
+    done_ids = set()
     if hours is None and not force:
-        cached_items, cached_ids, full_cached = await _load_cached_items("video", store)
+        cached_items, cached_ids, full_cached, done_ids = await _load_cached_items("video", store)
+    else:
+        done_ids = await store.get_done_ids("video")
 
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -277,15 +284,15 @@ async def enumerate_videos(uid: int, credential: Credential, store: DownloadStor
         console.print("  [dim](缓存新鲜，无新增内容)[/dim]")
         return cached_items
     if mode == EnumMode.INCREMENTAL:
-        return await _incremental_enum_videos(u, first_vlist, cached_ids, full_cached, cached_items, store, retries)
-    return await _full_enum_videos(u, first_vlist, cutoff, store, retries, hours)
+        return await _incremental_enum_videos(u, first_vlist, cached_ids, full_cached, cached_items, store, retries, done_ids)
+    return await _full_enum_videos(u, first_vlist, cutoff, store, retries, hours, done_ids)
 
 
 # ============================================================
 # Audio
 # ============================================================
 
-async def _incremental_enum_audios(u, first_aulist, first_resp, cached_ids, full_cached, cached_items, store, retries):
+async def _incremental_enum_audios(u, first_aulist, first_resp, cached_ids, full_cached, cached_items, store, retries, done_ids):
     console.print("  [yellow]检测到新增内容，增量更新...[/yellow]")
     new_items = []
     pn = 1
@@ -309,7 +316,7 @@ async def _incremental_enum_audios(u, first_aulist, first_resp, cached_ids, full
             if auid in cached_ids:
                 continue
             page_all_cached = False
-            if await store.is_done("audio", auid):
+            if auid in done_ids:
                 continue
             new_items.append(DownloadItem(
                 content_type="audio",
@@ -334,7 +341,7 @@ async def _incremental_enum_audios(u, first_aulist, first_resp, cached_ids, full
     return new_items + cached_items
 
 
-async def _full_enum_audios(u, first_aulist, first_resp, cutoff, store, retries, hours):
+async def _full_enum_audios(u, first_aulist, first_resp, cutoff, store, retries, hours, done_ids):
     items = []
     pn = 1
     resp = first_resp
@@ -361,7 +368,7 @@ async def _full_enum_audios(u, first_aulist, first_resp, cutoff, store, retries,
 
             page_all_old = False
 
-            if await store.is_done("audio", auid):
+            if auid in done_ids:
                 continue
 
             items.append(DownloadItem(
@@ -391,8 +398,11 @@ async def enumerate_audios(uid: int, credential: Credential, store: DownloadStor
     cached_items = None
     cached_ids = set()
     full_cached = []
+    done_ids = set()
     if hours is None and not force:
-        cached_items, cached_ids, full_cached = await _load_cached_items("audio", store)
+        cached_items, cached_ids, full_cached, done_ids = await _load_cached_items("audio", store)
+    else:
+        done_ids = await store.get_done_ids("audio")
 
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -406,15 +416,15 @@ async def enumerate_audios(uid: int, credential: Credential, store: DownloadStor
         console.print("  [dim](缓存新鲜，无新增内容)[/dim]")
         return cached_items
     if mode == EnumMode.INCREMENTAL:
-        return await _incremental_enum_audios(u, first_aulist, resp, cached_ids, full_cached, cached_items, store, retries)
-    return await _full_enum_audios(u, first_aulist, resp, cutoff, store, retries, hours)
+        return await _incremental_enum_audios(u, first_aulist, resp, cached_ids, full_cached, cached_items, store, retries, done_ids)
+    return await _full_enum_audios(u, first_aulist, resp, cutoff, store, retries, hours, done_ids)
 
 
 # ============================================================
 # Article
 # ============================================================
 
-async def _incremental_enum_articles(u, first_article_list, cached_ids, full_cached, cached_items, store, retries):
+async def _incremental_enum_articles(u, first_article_list, cached_ids, full_cached, cached_items, store, retries, done_ids):
     console.print("  [yellow]检测到新增内容，增量更新...[/yellow]")
     new_items = []
     pn = 1
@@ -437,7 +447,7 @@ async def _incremental_enum_articles(u, first_article_list, cached_ids, full_cac
             if aid in cached_ids:
                 continue
             page_all_cached = False
-            if await store.is_done("article", aid):
+            if aid in done_ids:
                 continue
             new_items.append(DownloadItem(
                 content_type="article",
@@ -458,7 +468,7 @@ async def _incremental_enum_articles(u, first_article_list, cached_ids, full_cac
     return new_items + cached_items
 
 
-async def _full_enum_articles(u, first_article_list, cutoff, store, retries, hours):
+async def _full_enum_articles(u, first_article_list, cutoff, store, retries, hours, done_ids):
     items = []
     pn = 1
     while True:
@@ -484,7 +494,7 @@ async def _full_enum_articles(u, first_article_list, cutoff, store, retries, hou
 
             page_all_old = False
 
-            if await store.is_done("article", aid):
+            if aid in done_ids:
                 continue
 
             items.append(DownloadItem(
@@ -510,8 +520,11 @@ async def enumerate_articles(uid: int, credential: Credential, store: DownloadSt
     cached_items = None
     cached_ids = set()
     full_cached = []
+    done_ids = set()
     if hours is None and not force:
-        cached_items, cached_ids, full_cached = await _load_cached_items("article", store)
+        cached_items, cached_ids, full_cached, done_ids = await _load_cached_items("article", store)
+    else:
+        done_ids = await store.get_done_ids("article")
 
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -525,15 +538,15 @@ async def enumerate_articles(uid: int, credential: Credential, store: DownloadSt
         console.print("  [dim](缓存新鲜，无新增内容)[/dim]")
         return cached_items
     if mode == EnumMode.INCREMENTAL:
-        return await _incremental_enum_articles(u, first_article_list, cached_ids, full_cached, cached_items, store, retries)
-    return await _full_enum_articles(u, first_article_list, cutoff, store, retries, hours)
+        return await _incremental_enum_articles(u, first_article_list, cached_ids, full_cached, cached_items, store, retries, done_ids)
+    return await _full_enum_articles(u, first_article_list, cutoff, store, retries, hours, done_ids)
 
 
 # ============================================================
 # Dynamic
 # ============================================================
 
-async def _incremental_enum_dynamics(u, first_dynamic_items, first_has_more, first_offset, cached_ids, full_cached, cached_items, store, retries):
+async def _incremental_enum_dynamics(u, first_dynamic_items, first_has_more, first_offset, cached_ids, full_cached, cached_items, store, retries, done_ids):
     console.print("  [yellow]检测到新增内容，增量更新...[/yellow]")
     new_items = []
     offset = ""
@@ -562,7 +575,7 @@ async def _incremental_enum_dynamics(u, first_dynamic_items, first_has_more, fir
             if dynamic_id in cached_ids:
                 continue
             page_all_cached = False
-            if await store.is_done("dynamic", dynamic_id):
+            if dynamic_id in done_ids:
                 continue
             new_items.append(DownloadItem(
                 content_type="dynamic",
@@ -584,7 +597,7 @@ async def _incremental_enum_dynamics(u, first_dynamic_items, first_has_more, fir
     return new_items + cached_items
 
 
-async def _full_enum_dynamics(u, first_dynamic_items, first_has_more, first_offset, cutoff, store, retries, hours):
+async def _full_enum_dynamics(u, first_dynamic_items, first_has_more, first_offset, cutoff, store, retries, hours, done_ids):
     items = []
     offset = ""
     is_first = True
@@ -619,7 +632,7 @@ async def _full_enum_dynamics(u, first_dynamic_items, first_has_more, first_offs
 
             page_all_old = False
 
-            if await store.is_done("dynamic", dynamic_id):
+            if dynamic_id in done_ids:
                 continue
 
             items.append(DownloadItem(
@@ -646,8 +659,11 @@ async def enumerate_dynamics(uid: int, credential: Credential, store: DownloadSt
     cached_items = None
     cached_ids = set()
     full_cached = []
+    done_ids = set()
     if hours is None and not force:
-        cached_items, cached_ids, full_cached = await _load_cached_items("dynamic", store)
+        cached_items, cached_ids, full_cached, done_ids = await _load_cached_items("dynamic", store)
+    else:
+        done_ids = await store.get_done_ids("dynamic")
 
     cutoff = _cutoff(hours)
     u = user.User(uid=uid, credential=credential)
@@ -663,5 +679,5 @@ async def enumerate_dynamics(uid: int, credential: Credential, store: DownloadSt
         console.print("  [dim](缓存新鲜，无新增内容)[/dim]")
         return cached_items
     if mode == EnumMode.INCREMENTAL:
-        return await _incremental_enum_dynamics(u, first_dynamic_items, first_has_more, first_offset, cached_ids, full_cached, cached_items, store, retries)
-    return await _full_enum_dynamics(u, first_dynamic_items, first_has_more, first_offset, cutoff, store, retries, hours)
+        return await _incremental_enum_dynamics(u, first_dynamic_items, first_has_more, first_offset, cached_ids, full_cached, cached_items, store, retries, done_ids)
+    return await _full_enum_dynamics(u, first_dynamic_items, first_has_more, first_offset, cutoff, store, retries, hours, done_ids)

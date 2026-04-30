@@ -130,6 +130,46 @@ class DownloadStore:
             await self._db.commit()
             self._pending_operations = 0
 
+    async def get_done_ids(self, content_type: str) -> set[str]:
+        """
+        批量获取指定类型所有已完成（done/skipped）的 content_id 集合。
+
+        一次性查询替代 N 次 is_done() 调用，将枚举阶段的
+        SQLite 查询从 O(n) 降为 O(1)。返回 set 用于 O(1) 查找。
+
+        Args:
+            content_type: 内容类型（video/audio/article/dynamic）
+
+        Returns:
+            已完成内容的 content_id 集合
+        """
+        cursor = await self._db.execute(
+            "SELECT content_id FROM downloads WHERE uid=? AND content_type=? AND status IN ('done', 'skipped')",
+            (self.uid, content_type),
+        )
+        rows = await cursor.fetchall()
+        return {row[0] for row in rows}
+
+    async def get_done_ids(self, content_type: str) -> set[str]:
+        """
+        批量获取指定类型所有已完成（done/skipped）的 content_id 集合。
+
+        一次性查询替代 N 次 is_done() 调用，将枚举阶段的
+        SQLite 查询从 O(n) 降为 O(1)。返回 set 用于 O(1) 查找。
+
+        Args:
+            content_type: 内容类型（video/audio/article/dynamic）
+
+        Returns:
+            已完成内容的 content_id 集合
+        """
+        cursor = await self._db.execute(
+            "SELECT content_id FROM downloads WHERE uid=? AND content_type=? AND status IN ('done', 'skipped')",
+            (self.uid, content_type),
+        )
+        rows = await cursor.fetchall()
+        return {row[0] for row in rows}
+
     async def is_done(self, content_type: str, content_id: str) -> bool:
         """
         检查指定内容是否已完成（done 或 skipped）。
