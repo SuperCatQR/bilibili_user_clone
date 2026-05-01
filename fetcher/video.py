@@ -63,19 +63,27 @@ async def _get_streams(v: video.Video, cid: int):
     返回值中的 vs/aus 可能为 None：
       - 部分老视频只有视频流无独立音频流
       - 部分音频区视频只有音频流
-    """
-    dd = await v.get_download_url(cid=cid)
-    det = VideoDownloadURLDataDetecter(dd)
-    streams = det.detect_best_streams()
 
-    vs = None
-    aus = None
-    for s in streams:
-        if isinstance(s, VideoStreamDownloadURL) and vs is None:
-            vs = s
-        if isinstance(s, AudioStreamDownloadURL) and aus is None:
-            aus = s
-    return vs, aus
+    异常处理：
+      - API请求失败返回 (None, None)
+      - 流解析失败返回 (None, None)
+    """
+    try:
+        dd = await v.get_download_url(cid=cid)
+        det = VideoDownloadURLDataDetecter(dd)
+        streams = det.detect_best_streams()
+
+        vs = None
+        aus = None
+        for s in streams:
+            if isinstance(s, VideoStreamDownloadURL) and vs is None:
+                vs = s
+            if isinstance(s, AudioStreamDownloadURL) and aus is None:
+                aus = s
+        return vs, aus
+    except Exception as e:
+        console.print(f"[yellow]获取流信息失败: {e}[/yellow]")
+        return None, None
 
 
 async def _download_with_refresh(get_url_fn, path: Path, credential: Credential, retries: int, label: str) -> bool:

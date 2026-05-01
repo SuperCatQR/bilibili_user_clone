@@ -91,6 +91,7 @@ async def _process_items(items: list[DownloadItem], download_fn, content_type_la
                 else:
                     stats["failed"] += 1
             except Exception as e:
+                console.print(f"[red]下载失败: {item.content_id} - {e}[/red]")
                 stats["failed"] += 1
             elapsed = time.monotonic() - t0
 
@@ -256,6 +257,11 @@ def clone(uid, output, types, video_mode, interval, retry, hours):
 
     UID: 目标用户的UID（数字）
     """
+    # 验证 --hours 参数必须为正数
+    if hours is not None and hours <= 0:
+        console.print("[red]--hours 必须为正整数[/red]")
+        sys.exit(1)
+
     # asyncio.run() 启动异步事件循环
     # 这是Python 3.7+的标准异步入口
     asyncio.run(run_clone(uid, output, types, video_mode, interval, retry, hours))

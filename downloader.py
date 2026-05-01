@@ -115,7 +115,7 @@ async def _download_with_ranges(url: str, output_path: Path, headers: dict, rang
     Range请求的原理：
     1. 先用 HEAD 请求获取文件总大小
     2. 然后逐段下载，每段 range_size 字节
-    3. 每段使用独立的TCP连接，避免长连接被切断
+    3. 复用同一个 session 连接，提高效率
 
     Args:
         url: 下载URL
@@ -128,62 +128,50 @@ async def _download_with_ranges(url: str, output_path: Path, headers: dict, rang
     """
     output_path = Path(output_path)
 
-    # 第一步：获取文件总大小
-    # 使用HEAD请求，不下载文件内容，只获取元数据
-    # allow_redirects=True: 跟随重定向（B站CDN经常重定向）
+    # 使用单个 session 完成所有请求，复用 TCP 连接
     async with aiohttp.ClientSession(headers=headers) as session:
+        # 第一步：获取文件总大小
         async with session.head(url, timeout=aiohttp.ClientTimeout(total=30, connect=10), allow_redirects=True) as resp:
             if resp.status not in (200, 302):
                 return False
-            # Content-Length头包含文件总大小（字节）
             total_size = int(resp.headers.get("Content-Length", 0))
             if not total_size:
                 return False
 
-    # 第二步：逐段下载
-    success = False
-    try:
-        with open(output_path, "wb") as f:
-            start = 0
-            chunk_num = 0
-            while start < total_size:
-                # 计算当前段的结束位置
-                end = min(start + range_size - 1, total_size - 1)
+        # 第二步：逐段下载
+        success = False
+        try:
+            with open(output_path, "wb") as f:
+                start = 0
+                while start < total_size:
+                    end = min(start + range_size - 1, total_size - 1)
 
-                # 构造Range请求头
-                # 格式：bytes=开始字节-结束字节（包含）
-                range_headers = dict(headers)
-                range_headers["Range"] = f"bytes={start}-{end}"
+                    # 构造 Range 请求头
+                    range_headers = {"Range": f"bytes={start}-{end}"}
 
-                # 每段最多重试3次
-                for attempt in range(3):
-                    try:
-                        async with aiohttp.ClientSession(headers=range_headers) as session:
-                            async with session.get(url, timeout=aiohttp.ClientTimeout(total=60, connect=10)) as resp:
-                                # 200: 完整响应（服务器不支持Range）
-                                # 206: 部分内容（服务器支持Range）
+                    # 每段最多重试3次
+                    for attempt in range(3):
+                        try:
+                            async with session.get(url, headers=range_headers, timeout=aiohttp.ClientTimeout(total=60, connect=10)) as resp:
                                 if resp.status not in (200, 206):
                                     return False
                                 data = await resp.read()
                                 f.write(data)
-                                chunk_num += 1
-                                # 移动到下一段
                                 start = end + 1
                                 break
-                    except Exception:
-                        if attempt < 2:
-                            await asyncio.sleep(2)
-                        else:
-                            return False
+                        except Exception:
+                            if attempt < 2:
+                                await asyncio.sleep(2)
+                            else:
+                                return False
 
-            success = True
-    finally:
-        # 下载失败时清理残留的部分文件，避免下次运行误判
-        if not success and output_path.exists():
-            try:
-                output_path.unlink()
-            except OSError:
-                pass
+                success = True
+        finally:
+            if not success and output_path.exists():
+                try:
+                    output_path.unlink()
+                except OSError:
+                    pass
 
     return success
 

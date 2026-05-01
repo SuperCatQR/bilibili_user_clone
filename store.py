@@ -9,6 +9,7 @@
 - status 为 failed 的项会被重新尝试（下次运行时）
 - enum_cache 表缓存枚举结果，避免重复调用API翻页
 - 缓存默认24小时过期，可通过环境变量 BILIBILI_CLONE_CACHE_TTL_HOURS 配置
+- 枚举缓存使用 zlib 压缩，减少存储空间（特别是动态数据）
 
 批量提交优化：
 - 每 batch_size 次操作自动提交一次，减少磁盘IO
@@ -24,6 +25,7 @@ SQLite选择理由：
 import json
 import os
 import time
+import zlib
 import aiosqlite
 from pathlib import Path
 from config import DB_DIR, DB_FILE
@@ -32,6 +34,49 @@ from config import DB_DIR, DB_FILE
 # 可通过环境变量 BILIBILI_CLONE_CACHE_TTL_HOURS 覆盖
 # 24小时是经验值：太短会导致频繁重新枚举，太长会错过新内容
 CACHE_TTL_HOURS = int(os.environ.get("BILIBILI_CLONE_CACHE_TTL_HOURS", "24"))
+
+# 缓存压缩标记前缀，用于区分压缩和未压缩的缓存数据
+_COMPRESSED_PREFIX = b"CMP:"
+
+
+def _compress_json(data: str) -> bytes:
+    """
+    压缩 JSON 字符串。
+
+    使用 zlib 压缩，对于包含大量重复结构的动态数据效果显著。
+    压缩率通常在 30-50% 左右。
+
+    Args:
+        data: JSON 字符串
+
+    Returns:
+        压缩后的字节数据，带压缩标记前缀
+    """
+    compressed = zlib.compress(data.encode("utf-8"), level=6)
+    return _COMPRESSED_PREFIX + compressed
+
+
+def _decompress_json(data: str | bytes) -> str:
+    """
+    解压 JSON 数据。
+
+    自动检测是否为压缩格式（带 COMPRESSED_PREFIX 前缀），
+    支持读取旧版未压缩的缓存数据，保证向后兼容。
+
+    Args:
+        data: 数据库中的原始数据（字符串或字节）
+
+    Returns:
+        解压后的 JSON 字符串
+    """
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+
+    if data.startswith(_COMPRESSED_PREFIX):
+        return zlib.decompress(data[len(_COMPRESSED_PREFIX):]).decode("utf-8")
+
+    # 兼容旧版未压缩缓存
+    return data.decode("utf-8") if isinstance(data, bytes) else data
 
 
 class DownloadStore:
@@ -150,26 +195,6 @@ class DownloadStore:
         rows = await cursor.fetchall()
         return {row[0] for row in rows}
 
-    async def get_done_ids(self, content_type: str) -> set[str]:
-        """
-        批量获取指定类型所有已完成（done/skipped）的 content_id 集合。
-
-        一次性查询替代 N 次 is_done() 调用，将枚举阶段的
-        SQLite 查询从 O(n) 降为 O(1)。返回 set 用于 O(1) 查找。
-
-        Args:
-            content_type: 内容类型（video/audio/article/dynamic）
-
-        Returns:
-            已完成内容的 content_id 集合
-        """
-        cursor = await self._db.execute(
-            "SELECT content_id FROM downloads WHERE uid=? AND content_type=? AND status IN ('done', 'skipped')",
-            (self.uid, content_type),
-        )
-        rows = await cursor.fetchall()
-        return {row[0] for row in rows}
-
     async def is_done(self, content_type: str, content_id: str) -> bool:
         """
         检查指定内容是否已完成（done 或 skipped）。
@@ -224,11 +249,9 @@ class DownloadStore:
 
     async def save_enum_cache(self, content_type: str, items: list):
         """
-        保存枚举结果缓存。items 为 DownloadItem 列表，序列化为 JSON 存储。
+        保存枚举结果缓存。items 为 DownloadItem 列表，序列化为 JSON 并压缩存储。
 
-        缓存目的：
-        - 避免重复调用API翻页（节省API配额）
-        - 加速重新运行（直接从缓存加载）
+        使用 zlib 压缩减少存储空间，特别是对于包含大量原始数据的动态缓存。
 
         Args:
             content_type: 内容类型
@@ -241,17 +264,22 @@ class DownloadStore:
             for it in items
         ]
 
+        json_str = json.dumps(data, ensure_ascii=False)
+        compressed = _compress_json(json_str)
+
         # INSERT OR REPLACE：如果缓存已存在则更新
         # created_at使用Unix时间戳，用于判断缓存是否过期
         await self._db.execute(
             "INSERT OR REPLACE INTO enum_cache (uid, content_type, items_json, created_at) VALUES (?, ?, ?, ?)",
-            (self.uid, content_type, json.dumps(data, ensure_ascii=False), time.time()),
+            (self.uid, content_type, compressed, time.time()),
         )
         await self._db.commit()
 
     async def load_enum_cache(self, content_type: str) -> tuple[list[dict] | None, bool, int]:
         """
         加载枚举缓存。
+
+        自动解压压缩的缓存数据，兼容旧版未压缩缓存。
 
         Args:
             content_type: 内容类型
@@ -274,7 +302,9 @@ class DownloadStore:
         is_expired = age > CACHE_TTL_HOURS * 3600
         age_hours = int(age / 3600)
 
-        return json.loads(items_json), is_expired, age_hours
+        # 解压缓存数据（自动兼容未压缩格式）
+        json_str = _decompress_json(items_json)
+        return json.loads(json_str), is_expired, age_hours
 
     async def clear_enum_cache(self, content_type: str | None = None):
         """
